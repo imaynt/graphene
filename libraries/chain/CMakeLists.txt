@@ -1,11 +1,5 @@
-
-add_custom_target( build_hardfork_hpp
-                   COMMAND cat-parts "${CMAKE_CURRENT_SOURCE_DIR}/hardfork.d" "${CMAKE_CURRENT_BINARY_DIR}/include/graphene/chain/hardfork.hpp" )
-set_source_files_properties( "${CMAKE_CURRENT_BINARY_DIR}/include/graphene/chain/hardfork.hpp" PROPERTIES GENERATED TRUE )
-
-add_dependencies( build_hardfork_hpp cat-parts )
-
 file(GLOB HEADERS "include/graphene/chain/*.hpp")
+file(GLOB PROTOCOL_HEADERS "include/graphene/chain/protocol/*.hpp")
 
 if( GRAPHENE_DISABLE_UNITY_BUILD )
    set( GRAPHENE_DB_FILES
@@ -33,6 +27,7 @@ add_library( graphene_chain
              # As database takes the longest to compile, start it first
              ${GRAPHENE_DB_FILES}
              fork_database.cpp
+             name.cpp
 
              protocol/types.cpp
              protocol/address.cpp
@@ -63,10 +58,22 @@ add_library( graphene_chain
              pts_address.cpp
 
              evaluator.cpp
+             stale_evaluator.cpp
              balance_evaluator.cpp
              account_evaluator.cpp
              assert_evaluator.cpp
              witness_evaluator.cpp
+             data_market_evaluator.cpp
+             data_transaction_evaluator.cpp
+             pay_data_transaction_evaluator.cpp
+             free_data_product_evaluator.cpp
+             league_data_product_evaluator.cpp
+             league_evaluator.cpp
+             datasource_copyright_evaluator.cpp
+             loyalty_evaluator.cpp
+             proxy_transfer_evaluator.cpp
+             contract_evaluator.cpp
+
              committee_member_evaluator.cpp
              asset_evaluator.cpp
              transfer_evaluator.cpp
@@ -79,6 +86,16 @@ add_library( graphene_chain
              special_authority.cpp
              buyback.cpp
 
+             apply_context.cpp
+             transaction_context.cpp
+             wast_to_wasm.cpp
+             wasm_interface.cpp
+             wasm_validation.cpp
+             wasm_injection.cpp
+
+             webassembly/wavm.cpp
+             webassembly/binaryen.cpp
+
              account_object.cpp
              asset_object.cpp
              fba_object.cpp
@@ -89,14 +106,20 @@ add_library( graphene_chain
 
              is_authorized_asset.cpp
 
+             abi_serializer.cpp
+
              ${HEADERS}
-             "${CMAKE_CURRENT_BINARY_DIR}/include/graphene/chain/hardfork.hpp"
+             ${PROTOCOL_HEADERS}
            )
 
-add_dependencies( graphene_chain build_hardfork_hpp )
-target_link_libraries( graphene_chain fc graphene_db )
+target_link_libraries( graphene_chain fc graphene_db Logging IR WAST WASM Runtime wasm
+    asmjs passes ast emscripten-optimizer support softfloat builtins)
+
 target_include_directories( graphene_chain
-                            PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include" "${CMAKE_CURRENT_BINARY_DIR}/include" )
+    PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include"
+           "${CMAKE_CURRENT_SOURCE_DIR}/../wasm-jit/Include"
+           "${CMAKE_CURRENT_SOURCE_DIR}/../../externals/binaryen/src"
+           "${CMAKE_CURRENT_BINARY_DIR}/include" )
 
 if(MSVC)
   set_source_files_properties( db_init.cpp db_block.cpp database.cpp block_database.cpp PROPERTIES COMPILE_FLAGS "/bigobj" )
@@ -109,3 +132,5 @@ INSTALL( TARGETS
    LIBRARY DESTINATION lib
    ARCHIVE DESTINATION lib
 )
+INSTALL( FILES ${HEADERS} DESTINATION "include/graphene/chain" )
+INSTALL( FILES ${PROTOCOL_HEADERS} DESTINATION "include/graphene/chain/protocol" )

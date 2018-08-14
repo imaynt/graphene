@@ -70,7 +70,10 @@ namespace graphene { namespace db {
          // serialized
          object_id_type          id;
 
+
+
          /// these methods are implemented for derived classes by inheriting abstract_object<DerivedClass>
+         ///
          virtual unique_ptr<object> clone()const = 0;
          virtual void               move_from( object& obj ) = 0;
          virtual variant            to_variant()const  = 0;
@@ -80,7 +83,7 @@ namespace graphene { namespace db {
 
    /**
     * @class abstract_object
-    * @brief   Use the Curiously Recurring Template Pattern to automatically add the ability to
+    * @brief Use the Curiously Recurring Template Pattern to automatically add the ability to
     *  clone, serialize, and move objects polymorphically.
     *
     *  http://en.wikipedia.org/wiki/Curiously_recurring_template_pattern

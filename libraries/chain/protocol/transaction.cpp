@@ -54,9 +54,10 @@ digest_type transaction::sig_digest( const chain_id_type& chain_id )const
 
 void transaction::validate() const
 {
+   //operations 表示事务内的操作
    FC_ASSERT( operations.size() > 0, "A transaction must have at least one operation", ("trx",*this) );
    for( const auto& op : operations )
-      operation_validate(op); 
+      operation_validate(op); //校验操作
 }
 
 graphene::chain::transaction_id_type graphene::chain::transaction::id() const
@@ -80,6 +81,21 @@ signature_type graphene::chain::signed_transaction::sign(const private_key_type&
    fc::raw::pack( enc, chain_id );
    fc::raw::pack( enc, *this );
    return key.sign_compact(enc.result());
+}
+
+bool graphene::chain::signed_transaction::validate_signee(const fc::ecc::public_key& expected_signee, const chain_id_type& chain_id) const
+{
+    auto tx = *this;
+    tx.signatures.clear();
+    auto digest = tx.sig_digest(chain_id);
+    idump((expected_signee));
+
+    for (const auto& sig : signatures) {
+        if (fc::ecc::public_key(sig, digest, true) == expected_signee) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void transaction::set_expiration( fc::time_point_sec expiration_time )
@@ -193,7 +209,7 @@ struct sign_state
             if( approved_by.find(a.first) == approved_by.end() )
             {
                if( depth == max_recursion )
-                  return false;
+                  continue;
                if( check_authority( get_active( a.first ), depth+1 ) )
                {
                   approved_by.insert( a.first );
@@ -325,8 +341,8 @@ set<public_key_type> signed_transaction::get_required_signatures(
    vector<authority> other;
    get_required_authorities( required_active, required_owner, other );
 
-
-   sign_state s(get_signature_keys( chain_id ),get_active,available_keys);
+   flat_set<public_key_type> signature_keys = get_signature_keys( chain_id );
+   sign_state s( signature_keys, get_active, available_keys );
    s.max_recursion = max_recursion_depth;
 
    for( const auto& auth : other )
@@ -341,7 +357,8 @@ set<public_key_type> signed_transaction::get_required_signatures(
    set<public_key_type> result;
 
    for( auto& provided_sig : s.provided_signatures )
-      if( available_keys.find( provided_sig.first ) != available_keys.end() )
+      if( available_keys.find( provided_sig.first ) != available_keys.end()
+            && signature_keys.find( provided_sig.first ) == signature_keys.end() )
          result.insert( provided_sig.first );
 
    return result;

@@ -23,7 +23,6 @@
  */
 
 #include <fc/smart_ref_impl.hpp>
-
 #include <graphene/chain/account_evaluator.hpp>
 #include <graphene/chain/buyback.hpp>
 #include <graphene/chain/buyback_object.hpp>
@@ -34,10 +33,11 @@
 #include <graphene/chain/special_authority.hpp>
 #include <graphene/chain/special_authority_object.hpp>
 #include <graphene/chain/worker_object.hpp>
-
 #include <algorithm>
 
+
 namespace graphene { namespace chain {
+
 
 void verify_authority_accounts( const database& db, const authority& a )
 {
@@ -68,6 +68,8 @@ void verify_account_votes( const database& db, const account_options& options )
               "Voted for more witnesses than currently allowed (${c})", ("c", chain_params.maximum_witness_count) );
    FC_ASSERT( options.num_committee <= chain_params.maximum_committee_count,
               "Voted for more committee members than currently allowed (${c})", ("c", chain_params.maximum_committee_count) );
+
+   FC_ASSERT(db.find_object(options.voting_account), "Invalid proxy account specified.");
 
    uint32_t max_vote_id = gpo.next_available_vote_id;
    bool has_worker_votes = false;
@@ -108,7 +110,6 @@ void_result account_create_evaluator::do_evaluate( const account_create_operatio
       FC_ASSERT( !op.extensions.value.buyback_options.valid() );
    }
 
-   FC_ASSERT( d.find_object(op.options.voting_account), "Invalid proxy account specified." );
    FC_ASSERT( fee_paying_account->is_lifetime_member(), "Only Lifetime members may register an account." );
    FC_ASSERT( op.referrer(d).is_member(d.head_block_time()), "The referrer must be either a lifetime or annual subscriber." );
 
@@ -138,7 +139,7 @@ void_result account_create_evaluator::do_evaluate( const account_create_operatio
    return void_result();
 } FC_CAPTURE_AND_RETHROW( (op) ) }
 
-object_id_type account_create_evaluator::do_apply( const account_create_operation& o )
+object_id_type account_create_evaluator::do_apply(const account_create_operation& o, uint32_t billed_cpu_time_us)
 { try {
 
    database& d = db();
@@ -273,7 +274,7 @@ void_result account_update_evaluator::do_evaluate( const account_update_operatio
    return void_result();
 } FC_CAPTURE_AND_RETHROW( (o) ) }
 
-void_result account_update_evaluator::do_apply( const account_update_operation& o )
+void_result account_update_evaluator::do_apply(const account_update_operation& o, uint32_t billed_cpu_time_us)
 { try {
    database& d = db();
    bool sa_before, sa_after;
@@ -332,7 +333,7 @@ void_result account_whitelist_evaluator::do_evaluate(const account_whitelist_ope
    return void_result();
 } FC_CAPTURE_AND_RETHROW( (o) ) }
 
-void_result account_whitelist_evaluator::do_apply(const account_whitelist_operation& o)
+void_result account_whitelist_evaluator::do_apply(const account_whitelist_operation& o, uint32_t billed_cpu_time_us)
 { try {
    database& d = db();
 
@@ -364,46 +365,201 @@ void_result account_whitelist_evaluator::do_apply(const account_whitelist_operat
    return void_result();
 } FC_CAPTURE_AND_RETHROW( (o) ) }
 
-void_result account_upgrade_evaluator::do_evaluate(const account_upgrade_evaluator::operation_type& o)
-{ try {
-   database& d = db();
+ void_result account_upgrade_evaluator::do_evaluate(const account_upgrade_evaluator::operation_type& o)
+ { try {
+    database& d = db();
 
-   account = &d.get(o.account_to_upgrade);
-   FC_ASSERT(!account->is_lifetime_member());
+    account = &d.get(o.account_to_upgrade);
+    FC_ASSERT(!account->is_lifetime_member());
+
+    return {};
+ //} FC_CAPTURE_AND_RETHROW( (o) ) }
+ } FC_RETHROW_EXCEPTIONS( error, "Unable to upgrade account '${a}'", ("a",o.account_to_upgrade(db()).name) ) }
+
+ void_result account_upgrade_evaluator::do_apply(const account_upgrade_evaluator::operation_type& o, uint32_t billed_cpu_time_us)
+ { try {
+    database& d = db();
+
+    d.modify(*account, [&](account_object& a) {
+       if( o.upgrade_to_lifetime_member )
+       {
+          // Upgrade to lifetime member. I don't care what the account was before.
+          a.statistics(d).process_fees(a, d);
+          a.membership_expiration_date = time_point_sec::maximum();
+          a.referrer = a.registrar = a.lifetime_referrer = a.get_id();
+          a.lifetime_referrer_fee_percentage = GRAPHENE_100_PERCENT - a.network_fee_percentage;
+       } else if( a.is_annual_member(d.head_block_time()) ) {
+          // Renew an annual subscription that's still in effect.
+          FC_ASSERT( d.head_block_time() <= HARDFORK_613_TIME );
+          FC_ASSERT(a.membership_expiration_date - d.head_block_time() < fc::days(3650),
+                    "May not extend annual membership more than a decade into the future.");
+          a.membership_expiration_date += fc::days(365);
+       } else {
+          // Upgrade from basic account.
+          FC_ASSERT( d.head_block_time() <= HARDFORK_613_TIME );
+          a.statistics(d).process_fees(a, d);
+          assert(a.is_basic_account(d.head_block_time()));
+          a.referrer = a.get_id();
+          a.membership_expiration_date = d.head_block_time() + fc::days(365);
+       }
+    });
+
+    return {};
+ } FC_RETHROW_EXCEPTIONS( error, "Unable to upgrade account '${a}'", ("a",o.account_to_upgrade(db()).name) ) }
+
+void_result account_upgrade_merchant_evaluator::do_evaluate(const account_upgrade_merchant_evaluator::operation_type& o)
+{ try {
+   uint8_t op_version = 0;
+   for (auto& ext : o.extensions) {
+       if (ext.which() == future_extensions::tag<operation_ext_version_t>::value) {
+           if (operation_version_one == ext.get<operation_ext_version_t>().version) {
+               op_version = operation_version_one;
+               break;
+           }
+       }
+   }
+
+   if (operation_version_one == op_version) {
+       FC_ASSERT(trx_state->_is_proposed_trx);
+       database& d = db();
+       account = &d.get(o.account_to_upgrade);
+       auth_referrer_account = &d.get(o.auth_referrer);
+       FC_ASSERT(auth_referrer_account != 0);
+       if (o.upgrade_to_merchant_member){
+          FC_ASSERT(!account->is_merchant_member());
+       }
+       else{
+          FC_ASSERT(account->is_merchant_member());
+       }
+   }
+   else {
+       database& d = db();
+       account = &d.get(o.account_to_upgrade);
+       auth_referrer_account = &d.get(o.auth_referrer);
+       FC_ASSERT(auth_referrer_account  != 0);
+       FC_ASSERT(auth_referrer_account->is_lifetime_member());
+       if (o.upgrade_to_merchant_member){
+          FC_ASSERT(!account->is_merchant_member());
+       }
+       else{
+          FC_ASSERT(account->is_merchant_member());
+       }
+   }
 
    return {};
-//} FC_CAPTURE_AND_RETHROW( (o) ) }
-} FC_RETHROW_EXCEPTIONS( error, "Unable to upgrade account '${a}'", ("a",o.account_to_upgrade(db()).name) ) }
+} FC_RETHROW_EXCEPTIONS( error, "Unable to upgrade merchant account '${a}'", ("a",o.account_to_upgrade(db()).name) ) }
 
-void_result account_upgrade_evaluator::do_apply(const account_upgrade_evaluator::operation_type& o)
+void_result account_upgrade_merchant_evaluator::do_apply(const account_upgrade_merchant_evaluator::operation_type& o, uint32_t billed_cpu_time_us)
 { try {
    database& d = db();
-
    d.modify(*account, [&](account_object& a) {
-      if( o.upgrade_to_lifetime_member )
-      {
-         // Upgrade to lifetime member. I don't care what the account was before.
+      if( o.upgrade_to_merchant_member ){
+         // Upgrade to merchant member. I don't care what the account was before.
          a.statistics(d).process_fees(a, d);
-         a.membership_expiration_date = time_point_sec::maximum();
-         a.referrer = a.registrar = a.lifetime_referrer = a.get_id();
-         a.lifetime_referrer_fee_percentage = GRAPHENE_100_PERCENT - a.network_fee_percentage;
-      } else if( a.is_annual_member(d.head_block_time()) ) {
-         // Renew an annual subscription that's still in effect.
-         FC_ASSERT( d.head_block_time() <= HARDFORK_613_TIME );
-         FC_ASSERT(a.membership_expiration_date - d.head_block_time() < fc::days(3650),
-                   "May not extend annual membership more than a decade into the future.");
-         a.membership_expiration_date += fc::days(365);
-      } else {
-         // Upgrade from basic account.
-         FC_ASSERT( d.head_block_time() <= HARDFORK_613_TIME );
-         a.statistics(d).process_fees(a, d);
-         assert(a.is_basic_account(d.head_block_time()));
-         a.referrer = a.get_id();
-         a.membership_expiration_date = d.head_block_time() + fc::days(365);
+         a.merchant_auth_referrer = o.auth_referrer;
+         a.merchant_expiration_date = time_point_sec::maximum();
       }
-   });
+      else{
+         a.statistics(d).process_fees(a, d);
+         a.merchant_auth_referrer = o.auth_referrer;
+         a.merchant_expiration_date = time_point_sec::min();
+      }
 
+   });
    return {};
-} FC_RETHROW_EXCEPTIONS( error, "Unable to upgrade account '${a}'", ("a",o.account_to_upgrade(db()).name) ) }
+} FC_RETHROW_EXCEPTIONS( error, "Unable to upgrade merchant account '${a}'", ("a",o.account_to_upgrade(db()).name) ) }
+
+void_result account_upgrade_data_transaction_member_evaluator::do_evaluate(const account_upgrade_data_transaction_member_evaluator::operation_type& o)
+{ try {
+    dlog("account_upgrade_data_transaction_member do_evaluate");
+    FC_ASSERT(trx_state->_is_proposed_trx);
+
+    database& d = db();
+    account = &d.get(o.account_to_upgrade);
+    if (o.upgrade_to_data_transaction_member){
+       FC_ASSERT(!account->is_data_transaction_member());
+    }
+
+    return {};
+} FC_RETHROW_EXCEPTIONS( error, "Unable to upgrade data_transaction_member account '${a}'", ("a",o.account_to_upgrade(db()).name) ) }
+
+void_result account_upgrade_data_transaction_member_evaluator::do_apply(const account_upgrade_data_transaction_member_evaluator::operation_type& o, uint32_t billed_cpu_time_us)
+{ try {
+    dlog("account_upgrade_data_transaction_member do_apply");
+    database& d = db();
+    d.modify(*account, [&](account_object& a) {
+       if (o.upgrade_to_data_transaction_member)
+       {
+          a.statistics(d).process_fees(a, d);
+          a.data_transaction_member_expiration_date = time_point_sec::maximum();
+       }
+
+    });
+    return {};
+} FC_RETHROW_EXCEPTIONS( error, "Unable to upgrade data_transaction_member account '${a}'", ("a",o.account_to_upgrade(db()).name) ) }
+
+ void_result account_upgrade_datasource_evaluator::do_evaluate(const account_upgrade_datasource_evaluator::operation_type& o)
+ { try {
+   dlog("account_upgrade_datasource do_evaluate");
+   uint8_t op_version = 0;
+   for (auto& ext : o.extensions) {
+       if (ext.which() == future_extensions::tag<operation_ext_version_t>::value) {
+           if (operation_version_one == ext.get<operation_ext_version_t>().version) {
+               op_version = operation_version_one;
+               break;
+           }
+       }
+   }
+   if (operation_version_one == op_version) {
+       FC_ASSERT(trx_state->_is_proposed_trx);
+       database& d = db();
+       account = &d.get(o.account_to_upgrade);
+       auth_referrer_account = &d.get(o.auth_referrer);
+       FC_ASSERT(auth_referrer_account != 0);
+       FC_ASSERT(account->is_merchant_member());
+       if (o.upgrade_to_datasource_member){
+          FC_ASSERT(!account->is_datasource_member());
+       }
+       else{
+          FC_ASSERT(account->is_datasource_member());
+       }
+   }
+   else {
+       database& d = db();
+       account = &d.get(o.account_to_upgrade);
+       auth_referrer_account = &d.get(o.auth_referrer);
+       FC_ASSERT(auth_referrer_account  != 0);
+       FC_ASSERT(auth_referrer_account->is_lifetime_member());
+       FC_ASSERT(account->is_merchant_member());
+       if (o.upgrade_to_datasource_member){
+          FC_ASSERT(!account->is_datasource_member());
+       }
+       else{
+          FC_ASSERT(account->is_datasource_member());
+       }
+   }
+    return {};
+ //} FC_CAPTURE_AND_RETHROW( (o) ) }
+ } FC_RETHROW_EXCEPTIONS( error, "Unable to upgrade datasource account '${a}'", ("a",o.account_to_upgrade(db()).name) ) }
+
+ void_result account_upgrade_datasource_evaluator::do_apply(const account_upgrade_datasource_evaluator::operation_type& o, uint32_t billed_cpu_time_us)
+ { try {
+    database& d = db();
+    d.modify(*account, [&](account_object& a) {
+       if( o.upgrade_to_datasource_member ){
+          // Upgrade to datasource member. I don't care what the account was before.
+          a.statistics(d).process_fees(a, d);
+          a.datasource_auth_referrer = o.auth_referrer;
+          a.datasource_expiration_date = time_point_sec::maximum();
+       }
+       else{
+          a.statistics(d).process_fees(a, d);
+          a.datasource_auth_referrer = o.auth_referrer;
+          a.datasource_expiration_date = time_point_sec::min(); 
+       }
+
+    });
+    return {};
+ } FC_RETHROW_EXCEPTIONS( error, "Unable to upgrade datasource account '${a}'", ("a",o.account_to_upgrade(db()).name) ) }
 
 } } // graphene::chain

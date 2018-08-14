@@ -30,6 +30,7 @@
 #include <graphene/chain/block_database.hpp>
 #include <graphene/chain/genesis_state.hpp>
 #include <graphene/chain/evaluator.hpp>
+#include <graphene/chain/wasm_interface.hpp>
 
 #include <graphene/db/object_database.hpp>
 #include <graphene/db/object.hpp>
@@ -89,10 +90,13 @@ namespace graphene { namespace chain {
           *
           * @param data_dir Path to open or create database in
           * @param genesis_loader A callable object which returns the genesis state to initialize new databases on
+          * @param db_version a version string that changes when the internal database format and/or logic is modified
           */
           void open(
              const fc::path& data_dir,
-             std::function<genesis_state_type()> genesis_loader );
+             std::function<genesis_state_type()> genesis_loader,
+             const std::string& db_version,
+             bool fast_replay = false);
 
          /**
           * @brief Rebuild object graph from block history and open detabase
@@ -100,7 +104,7 @@ namespace graphene { namespace chain {
           * This method may be called after or instead of @ref database::open, and will rebuild the object graph by
           * replaying blockchain history. When this method exits successfully, the database will be open.
           */
-         void reindex(fc::path data_dir, const genesis_state_type& initial_allocation = genesis_state_type());
+         void reindex(fc::path data_dir, bool fast_replay = false);
 
          /**
           * @brief wipe Delete database from disk, and potentially the raw chain as well.
@@ -193,12 +197,22 @@ namespace graphene { namespace chain {
           *  Emitted After a block has been applied and committed.  The callback
           *  should not yield and should execute quickly.
           */
-         fc::signal<void(const vector<object_id_type>&)> changed_objects;
+         fc::signal<void(const vector<object_id_type>&, const flat_set<account_id_type>&)> new_objects;
+
+         /**
+          *  Emitted After a block has been applied and committed.  The callback
+          *  should not yield and should execute quickly.
+          */
+         fc::signal<void(const vector<object_id_type>&, const flat_set<account_id_type>&)> changed_objects;
 
          /** this signal is emitted any time an object is removed and contains a
           * pointer to the last value of every object that was removed.
           */
-         fc::signal<void(const vector<const object*>&)>  removed_objects;
+         fc::signal<void(const vector<object_id_type>&, const vector<const object*>&, const flat_set<account_id_type>&)>  removed_objects;
+
+         // for data_transaction subscribe
+         fc::signal<void(const vector<object_id_type>&, const flat_set<account_id_type>&)> data_transaction_new_objects;
+         fc::signal<void(const string& request_id)> data_transaction_changed_objects;
 
          //////////////////// db_witness_schedule.cpp ////////////////////
 
@@ -246,6 +260,8 @@ namespace graphene { namespace chain {
          const asset_object&                    get_core_asset()const;
          const chain_property_object&           get_chain_properties()const;
          const global_property_object&          get_global_properties()const;
+         const data_transaction_commission_percent_t          get_commission_percent() const;
+         const vm_cpu_limit_t                   get_cpu_limit() const;
          const dynamic_global_property_object&  get_dynamic_global_properties()const;
          const node_property_object&            get_node_properties()const;
          const fee_schedule&                    current_fee_schedule()const;
@@ -398,6 +414,7 @@ namespace graphene { namespace chain {
          //Mark pop_undo() as protected -- we do not want outside calling pop_undo(); it should call pop_block() instead
          void pop_undo() { object_database::pop_undo(); }
          void notify_changed_objects();
+         void notify_data_transaction_changed_objects(const signed_transaction& trx);
 
       private:
          optional<undo_database::session>       _pending_tx_session;
@@ -409,13 +426,17 @@ namespace graphene { namespace chain {
          //////////////////// db_block.cpp ////////////////////
 
        public:
+         wasm_interface                 wasmif;
+
+       public:
          // these were formerly private, but they have a fairly well-defined API, so let's make them public
          void                  apply_block( const signed_block& next_block, uint32_t skip = skip_nothing );
-         processed_transaction apply_transaction( const signed_transaction& trx, uint32_t skip = skip_nothing );
-         operation_result      apply_operation( transaction_evaluation_state& eval_state, const operation& op );
-      private:
+         processed_transaction apply_transaction(const signed_transaction &trx, uint32_t skip = skip_nothing, const vector<operation_result> &operation_results = {});
+         operation_result      apply_operation(transaction_evaluation_state &eval_state, const operation &op, uint32_t billed_cpu_time_us = 0);
+
+       private:
          void                  _apply_block( const signed_block& next_block );
-         processed_transaction _apply_transaction( const signed_transaction& trx );
+         processed_transaction _apply_transaction(const signed_transaction &trx, const vector<operation_result> &operation_results = {});
 
          ///Steps involved in applying a new block
          ///@{
@@ -429,6 +450,7 @@ namespace graphene { namespace chain {
          void update_signing_witness(const witness_object& signing_witness, const signed_block& new_block);
          void update_last_irreversible_block();
          void clear_expired_transactions();
+         void clear_expired_signature_objs();
          void clear_expired_proposals();
          void clear_expired_orders();
          void update_expired_feeds();
@@ -489,6 +511,15 @@ namespace graphene { namespace chain {
          flat_map<uint32_t,block_id_type>  _checkpoints;
 
          node_property_object              _node_property_object;
+
+         /**
+          * Whether database is successfully opened or not.
+          *
+          * The database is considered open when there's no exception
+          * or assertion fail during database::open() method, and
+          * database::close() has not been called, or failed during execution.
+          */
+         bool                              _opened = false;
    };
 
    namespace detail

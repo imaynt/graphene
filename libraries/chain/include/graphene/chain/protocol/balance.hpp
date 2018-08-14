@@ -24,7 +24,7 @@
 #pragma once
 #include <graphene/chain/protocol/base.hpp>
 
-namespace graphene { namespace chain { 
+namespace graphene { namespace chain {
 
    /**
     * @brief Claim a balance in a @ref balanc_object
@@ -57,3 +57,4 @@ namespace graphene { namespace chain {
 FC_REFLECT( graphene::chain::balance_claim_operation::fee_parameters_type,  )
 FC_REFLECT( graphene::chain::balance_claim_operation,
             (fee)(deposit_to_account)(balance_to_claim)(balance_owner_key)(total_claimed) )
+

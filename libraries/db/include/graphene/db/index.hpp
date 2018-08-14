@@ -108,7 +108,7 @@ namespace graphene { namespace db {
          const object&              get( object_id_type id )const
          {
             auto maybe_found = find( id );
-            FC_ASSERT( maybe_found != nullptr, "Unable to find Object", ("id",id) );
+            FC_ASSERT(maybe_found != nullptr, "Unable to find Object ${id}", ("id", id));
             return *maybe_found;
          }
 
@@ -165,9 +165,10 @@ namespace graphene { namespace db {
          void on_modify( const object& obj );
 
          template<typename T>
-         void add_secondary_index()
+         T* add_secondary_index()
          {
             _sindex.emplace_back( new T() );
+            return static_cast<T*>(_sindex.back().get());
          }
 
          template<typename T>

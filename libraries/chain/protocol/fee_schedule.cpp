@@ -122,10 +122,18 @@ namespace graphene { namespace chain {
       this->scale = 0;
    }
 
+   /**
+    * 计算手续费
+    * @brief fee_schedule::calculate_fee
+    * @param op
+    * @param core_exchange_rate
+    * @return
+    */
    asset fee_schedule::calculate_fee( const operation& op, const price& core_exchange_rate )const
    {
       //idump( (op)(core_exchange_rate) );
-      fee_parameters params; params.set_which(op.which());
+      fee_parameters params;
+      params.set_which(op.which());
       auto itr = parameters.find(params);
       if( itr != parameters.end() ) params = *itr;
       auto base_value = op.visit( calc_fee_visitor( params ) );

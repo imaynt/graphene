@@ -36,6 +36,11 @@
 #include <graphene/chain/withdraw_permission_object.hpp>
 #include <graphene/chain/witness_object.hpp>
 #include <graphene/chain/worker_object.hpp>
+#include <graphene/chain/data_market_object.hpp>
+#include <graphene/chain/data_transaction_object.hpp>
+#include <graphene/chain/free_data_product_object.hpp>
+#include <graphene/chain/league_data_product_object.hpp>
+#include <graphene/chain/league_object.hpp>
 
 #include <fc/smart_ref_impl.hpp>
 #include <iostream>

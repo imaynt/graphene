@@ -24,11 +24,8 @@
 #pragma once
 
 #include <graphene/app/full_account.hpp>
-
 #include <graphene/chain/protocol/types.hpp>
-
 #include <graphene/chain/database.hpp>
-
 #include <graphene/chain/account_object.hpp>
 #include <graphene/chain/asset_object.hpp>
 #include <graphene/chain/balance_object.hpp>
@@ -40,72 +37,29 @@
 #include <graphene/chain/proposal_object.hpp>
 #include <graphene/chain/worker_object.hpp>
 #include <graphene/chain/witness_object.hpp>
-
 #include <graphene/market_history/market_history_plugin.hpp>
+#include <graphene/chain/data_market_object.hpp>
+#include <graphene/chain/data_transaction_object.hpp>
+#include <graphene/app/database_api_common.hpp>
+#include <graphene/chain/pocs_object.hpp>
 
 #include <fc/api.hpp>
 #include <fc/optional.hpp>
 #include <fc/variant_object.hpp>
 
-#include <fc/network/ip.hpp>
-
 #include <boost/container/flat_set.hpp>
 
 #include <functional>
 #include <map>
-#include <memory>
 #include <vector>
 
 namespace graphene { namespace app {
 
 using namespace graphene::chain;
-using namespace graphene::market_history;
 using namespace std;
 
 class database_api_impl;
 
-struct order
-{
-   double                     price;
-   double                     quote;
-   double                     base;
-};
-
-struct order_book
-{
-  string                      base;
-  string                      quote;
-  vector< order >             bids;
-  vector< order >             asks;
-};
-
-struct market_ticker
-{
-   string                     base;
-   string                     quote;
-   double                     latest;
-   double                     lowest_ask;
-   double                     highest_bid;
-   double                     percent_change;
-   double                     base_volume;
-   double                     quote_volume;
-};
-
-struct market_volume
-{
-   string                     base;
-   string                     quote;
-   double                     base_volume;
-   double                     quote_volume;
-};
-
-struct market_trade
-{
-   fc::time_point_sec         date;
-   double                     price;
-   double                     amount;
-   double                     value;
-};
 
 /**
  * @brief The database_api class implements the RPC API for the chain database.
@@ -132,12 +86,16 @@ class database_api
        * If any of the provided IDs does not map to an object, a null variant is returned in its position.
        */
       fc::variants get_objects(const vector<object_id_type>& ids)const;
+      fc::variants get_table_objects(uint64_t code, uint64_t scope, uint64_t table) const;
+      bytes serialize_contract_call_args(string contract, string method, string json_args) const;
 
       ///////////////////
       // Subscriptions //
       ///////////////////
 
       void set_subscribe_callback( std::function<void(const variant&)> cb, bool clear_filter );
+      void set_data_transaction_subscribe_callback(std::function<void(const variant&)> cb, bool clear_filter);
+      void set_data_transaction_products_subscribe_callback(std::function<void(const variant&)> cb, vector<object_id_type> ids);
       void set_pending_transaction_callback( std::function<void(const variant&)> cb );
       void set_block_applied_callback( std::function<void(const variant& block_id)> cb );
       /**
@@ -163,7 +121,14 @@ class database_api
        * @param block_num Height of the block to be returned
        * @return the referenced block, or null if no matching block was found
        */
-      optional<signed_block> get_block(uint32_t block_num)const;
+      optional<signed_block_with_info> get_block(uint32_t block_num)const;
+
+      /**
+       * @brief Retrieve a full, signed block
+       * @param block_id of the block to be returned
+       * @return the referenced block, or null if no matching block was found
+       */
+      optional<signed_block_with_info> get_block_by_id(block_id_type block_id)const;
 
       /**
        * @brief used to fetch an individual transaction.
@@ -191,6 +156,17 @@ class database_api
        */
       global_property_object get_global_properties()const;
 
+
+      /**
+       *  @brief Retrieve data_transaction commission_percent
+       */
+      data_transaction_commission_percent_t get_commission_percent() const;
+
+      /**
+       *  @brief Retrieve vm cpu_limit
+       */
+      vm_cpu_limit_t get_cpu_limit() const;
+
       /**
        * @brief Retrieve compile-time constants
        */
@@ -211,6 +187,22 @@ class database_api
       //////////
 
       vector<vector<account_id_type>> get_key_references( vector<public_key_type> key )const;
+
+     /**
+      * Determine whether a textual representation of a public key
+      * (in Base-58 format) is *currently* linked
+      * to any *registered* (i.e. non-stealth) account on the blockchain
+      * @param public_key Public key
+      * @return Whether a public key is known
+      */
+     bool is_public_key_registered(string public_key) const;
+
+     /**
+      * Determine whether an account_name is registered on the blockchain
+      * @param name account_name
+      * @return true if account_name is registered
+      */
+     bool is_account_registered(string name) const;
 
       //////////////
       // Accounts //
@@ -274,6 +266,14 @@ class database_api
        */
       vector<asset> get_account_balances(account_id_type id, const flat_set<asset_id_type>& assets)const;
 
+      /**
+       * @brief Get an account's lock balances in various assets
+       * @param id ID of the account to get lock balances for
+       * @param assets IDs of the assets to get lock balances of; if empty, get all assets account has a lock balance in
+       * @return lock balances of the account
+       */
+      vector<asset> get_account_lock_balances(account_id_type id, const flat_set<asset_id_type>& assets)const;
+
       /// Semantically equivalent to @ref get_account_balances, but takes a name instead of an ID.
       vector<asset> get_named_account_balances(const std::string& name, const flat_set<asset_id_type>& assets)const;
 
@@ -285,9 +285,121 @@ class database_api
       vector<vesting_balance_object> get_vesting_balances( account_id_type account_id )const;
 
       /**
+       * @brief Get the total number of transactions of the blockchain
+       */
+      uint64_t get_transaction_count() const;
+
+      /**
        * @brief Get the total number of accounts registered with the blockchain
        */
       uint64_t get_account_count()const;
+
+      /**
+       * @brief Get the total number of assets registered with the blockchain
+       */
+      uint64_t get_asset_count() const;
+
+      /**
+      * @brief get_data_transaction_product_costs
+      * @param start
+      * @param end
+      * @return the number of the data transaction product costs during this time
+      */
+      uint64_t get_data_transaction_product_costs(fc::time_point_sec start, fc::time_point_sec end) const;
+
+      /**
+      * @brief get_data_transaction_total_count
+      * @param start
+      * @param end
+      * @return the number of the data transaction count during this time
+      */
+      uint64_t get_data_transaction_total_count(fc::time_point_sec start, fc::time_point_sec end) const;
+
+
+      /**
+      * @brief get_merchants_total_count
+      * @return the total count of merchants
+      */
+      uint64_t get_merchants_total_count() const;
+
+      /**
+      * @brief get_data_transaction_commission
+      * @param start
+      * @param end
+      * @return the number of the data transaction commission during this time
+      */
+      uint64_t get_data_transaction_commission(fc::time_point_sec start, fc::time_point_sec end) const;
+
+      /**
+      * @brief get_data_transaction_pay_fee
+      * @param start
+      * @param end
+      * @return the number of the data transaction pay fee during this time
+      */
+      uint64_t get_data_transaction_pay_fee(fc::time_point_sec start, fc::time_point_sec end) const;
+
+      /**
+      * @brief get_data_transaction_product_costs_by_requester
+      * @param requester
+      * @param start
+      * @param end
+      * @return the number of the data transaction product costs of the requester during this time
+      */
+      uint64_t get_data_transaction_product_costs_by_requester(string requester, fc::time_point_sec start, fc::time_point_sec end) const;
+
+      /**
+      * @brief get_data_transaction_total_count_by_requester
+      * @param requester
+      * @param start
+      * @param end
+      * @return the number of the data transaction product count of the requester during this time
+      */
+      uint64_t get_data_transaction_total_count_by_requester(string requester, fc::time_point_sec start, fc::time_point_sec end) const;
+
+      /**
+      * @brief get_data_transaction_pay_fees_by_requester
+      * @param requester
+      * @param start
+      * @param end
+      * @return the number of the data transaction pay fees of the requester during this time
+      */
+      uint64_t get_data_transaction_pay_fees_by_requester(string requester, fc::time_point_sec start, fc::time_point_sec end) const;
+
+      /**
+      * @brief get_data_transaction_pay_fees_by_requester
+      * @param product_id
+      * @param start
+      * @param end
+      * @return the number of the data transaction product costs of the product during this time
+      */
+      uint64_t get_data_transaction_product_costs_by_product_id(string product_id, fc::time_point_sec start, fc::time_point_sec end) const;
+
+      /**
+      * @brief get_data_transaction_total_count_by_product_id
+      * @param product_id
+      * @param start
+      * @param end
+      * @return the number of the data transaction total count of the product during this time
+      */
+      uint64_t get_data_transaction_total_count_by_product_id(string product_id, fc::time_point_sec start, fc::time_point_sec end) const;
+
+      /** list_data_transaction_complain_requesters.
+      *
+      * @param start_date_time
+      * @param end_date_time
+      * @param limit
+      * @return map<account_id_type, uint64_t>
+      */
+      map<account_id_type, uint64_t> list_data_transaction_complain_requesters(fc::time_point_sec start_date_time, fc::time_point_sec end_date_time, uint8_t limit) const;
+      
+      /** list_data_transaction_complain_datasources.
+      *
+      * @param start_date_time
+      * @param end_date_time
+      * @param limit
+      * @return map<account_id_type, uint64_t>
+      */
+      map<account_id_type, uint64_t> list_data_transaction_complain_datasources(fc::time_point_sec start_date_time, fc::time_point_sec end_date_time, uint8_t limit) const;
 
       ////////////
       // Assets //
@@ -365,6 +477,8 @@ class database_api
       void subscribe_to_market(std::function<void(const variant&)> callback,
                    asset_id_type a, asset_id_type b);
 
+      void unsubscribe_data_transaction_callback();
+
       /**
        * @brief Unsubscribe from updates to a given market
        * @param a First asset ID
@@ -396,6 +510,15 @@ class database_api
        * @return Order book of the market
        */
       order_book get_order_book( const string& base, const string& quote, unsigned limit = 50 )const;
+
+      /** get pocs_object.
+       *
+       * @param league_id
+       * @param account_id
+       * @param product_id
+       * @return pocs_object
+       */
+      optional<pocs_object> get_pocs_object(league_id_type league_id, account_id_type account_id, object_id_type product_id) const;
 
       /**
        * @brief Returns recent trades for the market assetA:assetB
@@ -502,6 +625,9 @@ class database_api
       /// @brief Get a hexdump of the serialized binary form of a transaction
       std::string get_transaction_hex(const signed_transaction& trx)const;
 
+      /// @brief Get a hexdump of the serialized binary form of a transaction
+      std::string serialize_transaction(const signed_transaction& tx) const;
+
       /**
        *  This API will take a partially signed transaction and a set of public keys that the owner has the ability to sign for
        *  and return the minimal subset of public keys that should add signatures to the transaction.
@@ -555,24 +681,153 @@ class database_api
        */
       vector<blinded_balance_object> get_blinded_balances( const flat_set<commitment_type>& commitments )const;
 
+
+      ////////////////////////////
+      // Data Market Interface  //
+      ////////////////////////////
+      /**
+       *
+       * 这是一个测试用的函数
+       * @see get_test()
+       * @brief get_test
+       * @return
+       */
+      uint64_t                          get_test() const;
+    /**
+     *
+     * 获取首页的热门数据市场
+     * @brief list_home_free_data_products
+     * @param limit
+     * @return
+     */
+    vector<free_data_product_object>  list_home_free_data_products(uint8_t limit) const;
+    /**
+     *
+     * 获得首页的活跃联盟
+     * @brief list_home_leagues
+     * @param limit
+     * @return
+     */
+    vector<league_object>  list_home_leagues(uint8_t limit) const;
+    /**
+     *
+     * 获得某个数据市场的行业分类列表
+     * @brief list_data_market_categories
+     * @return
+     */
+    vector<data_market_category_object> list_data_market_categories(uint8_t data_market_type) const;
+
+//    /**
+//     *
+//     * 获取推荐的自由市场数据产品
+//     * @brief list_recommend_free_data_products
+//     * @return
+//     */
+//    vector<free_data_product_object>  list_recommend_free_data_products(string product_id_or_league_id) const;
+//    /**
+//     *
+//     * 获得推荐的联盟
+//     * @brief list_recommend_leagues
+//     * @return
+//     */
+//    vector<league_object>        list_recommend_leagues(string product_id_or_league_id) const;
+
+
+    /**
+     * @brief list_free_data_products
+     * @param data_market_category_id
+     * @param offset
+     * @param limit
+     * @param order_by
+     * @param keyword
+     * @param show_all
+     * @return
+     */
+    free_data_product_search_results_object   list_free_data_products(string data_market_category_id,uint32_t offset,uint32_t limit,string order_by,string keyword,bool show_all = false) const;
+    /**
+     *
+     *
+     * @brief list_league_data_products
+     * @param data_market_category_id
+     * @param offset
+     * @param limit
+     * @param order_by
+     * @param keyword
+     * @param show_all
+     * @return
+     */
+    league_data_product_search_results_object   list_league_data_products(string data_market_category_id,uint32_t offset,uint32_t limit,string order_by,string keyword,bool show_all = false) const;
+    /**
+     * @brief list_leagues
+     * @param data_market_category_id
+     * @param offset
+     * @param limit
+     * @param order_by
+     * @param keyword
+     * @param show_all
+     * @return
+     */
+    league_search_results_object  list_leagues(string data_market_category_id,uint32_t offset,uint32_t limit,string order_by,string keyword,bool show_all = false) const;
+
+    /**
+     * @brief get_data_market_categories
+     * @param data_market_category_ids
+     * @return
+     */
+    vector<optional<data_market_category_object>> get_data_market_categories(const vector<data_market_category_id_type>& data_market_category_ids)const;
+    /**
+     * @brief get_free_data_products
+     * @param product_ids
+     * @return
+     */
+    vector<optional<free_data_product_object>> get_free_data_products(const vector<free_data_product_id_type>& product_ids)const;
+
+    /**
+     * @brief get_league_data_products
+     * @param product_ids
+     * @return
+     */
+    vector<optional<league_data_product_object>> get_league_data_products(const vector<league_data_product_id_type>& product_ids)const;
+
+
+    /**
+     * @brief get league by league_ids
+     * @param league_ids
+     * @return
+     */
+    vector<optional<league_object>> get_leagues(const vector<league_id_type>& league_ids) const;
+
+
+    optional<data_transaction_object> get_data_transaction_by_request_id(string request_id) const;
+    data_transaction_search_results_object list_data_transactions_by_requester(string requester, uint32_t limit) const;
+
+
+    map<account_id_type, uint64_t> list_second_hand_datasources(time_point_sec start_date_time, time_point_sec end_date_time, uint32_t limit) const;
+    uint32_t list_total_second_hand_transaction_counts_by_datasource(fc::time_point_sec start_date_time, fc::time_point_sec end_date_time, account_id_type datasource_account) const;
+
+    /**
+     * @brief get witness participation rate
+     * @return uint32_t
+     */   
+    uint32_t get_witness_participation_rate() const;
+
    private:
       std::shared_ptr< database_api_impl > my;
+
 };
 
 } }
 
-FC_REFLECT( graphene::app::order, (price)(quote)(base) );
-FC_REFLECT( graphene::app::order_book, (base)(quote)(bids)(asks) );
-FC_REFLECT( graphene::app::market_ticker, (base)(quote)(latest)(lowest_ask)(highest_bid)(percent_change)(base_volume)(quote_volume) );
-FC_REFLECT( graphene::app::market_volume, (base)(quote)(base_volume)(quote_volume) );
-FC_REFLECT( graphene::app::market_trade, (date)(price)(amount)(value) );
-
 FC_API(graphene::app::database_api,
    // Objects
    (get_objects)
-
+   (get_table_objects)
+   (serialize_contract_call_args)
+   (serialize_transaction)
    // Subscriptions
    (set_subscribe_callback)
+   (set_data_transaction_subscribe_callback)
+   (set_data_transaction_products_subscribe_callback)
    (set_pending_transaction_callback)
    (set_block_applied_callback)
    (cancel_all_subscriptions)
@@ -580,18 +835,21 @@ FC_API(graphene::app::database_api,
    // Blocks and transactions
    (get_block_header)
    (get_block)
+   (get_block_by_id)
    (get_transaction)
    (get_recent_transaction_by_id)
 
    // Globals
    (get_chain_properties)
    (get_global_properties)
+   (get_commission_percent)
    (get_config)
    (get_chain_id)
    (get_dynamic_global_properties)
 
    // Keys
    (get_key_references)
+   (is_public_key_registered)
 
    // Accounts
    (get_accounts)
@@ -600,10 +858,28 @@ FC_API(graphene::app::database_api,
    (get_account_references)
    (lookup_account_names)
    (lookup_accounts)
+   (get_transaction_count)
    (get_account_count)
+   (get_asset_count)
+   (is_account_registered)
+
+   // statistic
+   (get_data_transaction_product_costs)
+   (get_data_transaction_total_count)
+   (get_merchants_total_count)
+   (get_data_transaction_commission)
+   (get_data_transaction_pay_fee)
+   (get_data_transaction_product_costs_by_requester)
+   (get_data_transaction_total_count_by_requester)
+   (get_data_transaction_pay_fees_by_requester)
+   (get_data_transaction_product_costs_by_product_id)
+   (get_data_transaction_total_count_by_product_id)
+   (list_data_transaction_complain_requesters)
+   (list_data_transaction_complain_datasources)
 
    // Balances
    (get_account_balances)
+   (get_account_lock_balances)
    (get_named_account_balances)
    (get_balance_objects)
    (get_vested_balances)
@@ -621,9 +897,11 @@ FC_API(graphene::app::database_api,
    (get_settle_orders)
    (get_margin_positions)
    (subscribe_to_market)
+   (unsubscribe_data_transaction_callback)
    (unsubscribe_from_market)
    (get_ticker)
    (get_24_volume)
+   (get_pocs_object)
    (get_trade_history)
 
    // Witnesses
@@ -651,10 +929,26 @@ FC_API(graphene::app::database_api,
    (verify_account_authority)
    (validate_transaction)
    (get_required_fees)
-
    // Proposed transactions
    (get_proposed_transactions)
-
    // Blinded balances
    (get_blinded_balances)
+   // Data Market Interface
+   (get_test)
+   (list_home_free_data_products)
+   (list_home_leagues)
+   (list_data_market_categories)
+   (list_free_data_products)
+   (list_league_data_products)
+   (list_leagues)
+   (get_data_market_categories)
+   (get_free_data_products)
+   (get_league_data_products)
+   (get_leagues)
+   (get_data_transaction_by_request_id)
+   (list_data_transactions_by_requester)
+   (list_second_hand_datasources)
+   (list_total_second_hand_transaction_counts_by_datasource)
+   (get_witness_participation_rate)
+   
 )

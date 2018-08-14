@@ -44,11 +44,17 @@
 
 #include <fc/interprocess/signals.hpp>
 #include <boost/program_options.hpp>
+#include <boost/filesystem.hpp>
 
 #include <fc/log/console_appender.hpp>
 #include <fc/log/file_appender.hpp>
 #include <fc/log/logger.hpp>
 #include <fc/log/logger_config.hpp>
+
+#include <graphene/utilities/git_revision.hpp>
+#include <boost/version.hpp>
+#include <boost/algorithm/string/replace.hpp>
+#include <websocketpp/version.hpp>
 
 #ifdef WIN32
 # include <signal.h>
@@ -70,6 +76,7 @@ int main( int argc, char** argv )
       boost::program_options::options_description opts;
          opts.add_options()
          ("help,h", "Print this help message and exit.")
+         ("data-dir,D", bpo::value<boost::filesystem::path>()->default_value("witness_node_data_dir"), "Directory containing databases, for cli_wallet write logs ")
          ("server-rpc-endpoint,s", bpo::value<string>()->implicit_value("ws://127.0.0.1:8090"), "Server websocket RPC endpoint")
          ("server-rpc-user,u", bpo::value<string>(), "Server Username")
          ("server-rpc-password,p", bpo::value<string>(), "Server Password")
@@ -78,8 +85,11 @@ int main( int argc, char** argv )
          ("rpc-tls-certificate,c", bpo::value<string>()->implicit_value("server.pem"), "PEM certificate for wallet websocket TLS RPC")
          ("rpc-http-endpoint,H", bpo::value<string>()->implicit_value("127.0.0.1:8093"), "Endpoint for wallet HTTP RPC to listen on")
          ("daemon,d", "Run the wallet in daemon mode" )
+         ("enable-rpc-log", "enable rpc log production, in data-dir/logs/rpc/rpc.log")
          ("wallet-file,w", bpo::value<string>()->implicit_value("wallet.json"), "wallet to load")
-         ("chain-id", bpo::value<string>(), "chain ID to connect to");
+         ("chain-id", bpo::value<string>(), "chain ID to connect to")
+         ("suggest-brain-key", "Suggest a safe brain key to use for creating your account")
+         ("version,v", "Display version information");
 
       bpo::variables_map options;
 
@@ -91,7 +101,33 @@ int main( int argc, char** argv )
          return 0;
       }
 
+      if( options.count("version") )
+      {
+         std::cout << "Version: " << graphene::utilities::git_revision_description << "\n";
+         std::cout << "SHA: " << graphene::utilities::git_revision_sha << "\n";
+         std::cout << "Timestamp: " << fc::get_approximate_relative_time_string(fc::time_point_sec(graphene::utilities::git_revision_unix_timestamp)) << "\n";
+         std::cout << "SSL: " << OPENSSL_VERSION_TEXT << "\n";
+         std::cout << "Boost: " << boost::replace_all_copy(std::string(BOOST_LIB_VERSION), "_", ".") << "\n";
+         std::cout << "Websocket++: " << websocketpp::major_version << "." << websocketpp::minor_version << "." << websocketpp::patch_version << "\n";
+         return 0;
+      }
+
+      if( options.count("suggest-brain-key") )
+      {
+         auto keyinfo = graphene::wallet::utility::suggest_brain_key();
+         string data = fc::json::to_pretty_string( keyinfo );
+         std::cout << data.c_str() << std::endl;
+         return 0;
+      }
+
       fc::path data_dir;
+      if( options.count("data-dir") )
+      {
+         data_dir = options["data-dir"].as<boost::filesystem::path>();
+         if( data_dir.is_relative() )
+            data_dir = fc::current_path() / data_dir;
+      }
+
       fc::logging_config cfg;
       fc::path log_dir = data_dir / "logs";
 
@@ -99,10 +135,10 @@ int main( int argc, char** argv )
       ac.filename             = log_dir / "rpc" / "rpc.log";
       ac.flush                = true;
       ac.rotate               = true;
-      ac.rotation_interval    = fc::hours( 1 );
+      ac.rotation_interval    = fc::hours(24);
       ac.rotation_limit       = fc::days( 1 );
 
-      std::cout << "Logging RPC to file: " << (data_dir / ac.filename).preferred_string() << "\n";
+      std::cout << "Logging RPC to file: " << (ac.filename).preferred_string() << "\n";
 
       cfg.appenders.push_back(fc::appender_config( "default", "console", fc::variant(fc::console_appender::config())));
       cfg.appenders.push_back(fc::appender_config( "rpc", "file", fc::variant(ac)));
@@ -113,7 +149,7 @@ int main( int argc, char** argv )
       cfg.loggers.back().level = fc::log_level::debug;
       cfg.loggers.back().appenders = {"rpc"};
 
-      //fc::configure_logging( cfg );
+      fc::configure_logging(cfg);
 
       fc::ecc::private_key committee_private_key = fc::ecc::private_key::regenerate(fc::sha256::hash(string("null_key")));
 
@@ -209,8 +245,6 @@ int main( int argc, char** argv )
       if( options.count("rpc-endpoint") )
       {
          _websocket_server->on_connection([&]( const fc::http::websocket_connection_ptr& c ){
-            std::cout << "here... \n";
-            wlog("." );
             auto wsc = std::make_shared<fc::rpc::websocket_api_connection>(*c);
             wsc->register_api(wapi);
             c->set_session_data( wsc );

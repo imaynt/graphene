@@ -23,6 +23,7 @@
  */
 #include <graphene/chain/account_object.hpp>
 #include <graphene/chain/asset_object.hpp>
+#include <graphene/chain/committee_member_object.hpp>
 #include <graphene/chain/database.hpp>
 #include <graphene/chain/hardfork.hpp>
 #include <fc/uint128.hpp>
@@ -266,5 +267,30 @@ void account_referrer_index::about_to_modify( const object& before )
 void account_referrer_index::object_modified( const object& after  )
 {
 }
+
+ bool account_object::is_active_committe_member(const database& db)const{
+
+     fc::optional<committee_member_object> com;
+     const auto& idx = db.get_index_type<committee_member_index>().indices().get<by_account>();
+     auto itr = idx.find(this->get_id());
+     if( itr != idx.end() ){
+           com = *itr;
+     }else{
+         return false;
+     }
+     const committee_member_object& com2 = *com;
+     //和激活的理事会列表的ID进行对比
+     vector<committee_member_id_type> active_committee_members = db.get_global_properties().active_committee_members;
+     wlog("size : ${size}................", ("size",active_committee_members.size()));
+     wlog("this id : ${thisid}................", ("thisid",this->id));
+     wlog("com2 id : ${com2id}................", ("com2id",com2.id.as<committee_member_id_type>()));
+      for( committee_member_id_type id : active_committee_members ){
+        wlog("id : ${id}................", ("id",id));
+        if(com2.id.as<committee_member_id_type>() == id){
+              return true;
+        }
+      }
+      return true;
+     }
 
 } } // graphene::chain

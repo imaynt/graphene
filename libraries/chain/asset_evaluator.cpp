@@ -53,6 +53,9 @@ void_result asset_create_evaluator::do_evaluate( const asset_create_operation& o
    auto asset_symbol_itr = asset_indx.find( op.symbol );
    FC_ASSERT( asset_symbol_itr == asset_indx.end() );
 
+   if( d.head_block_time() > HARDFORK_385_TIME )
+   {
+
    if( d.head_block_time() <= HARDFORK_409_TIME )
    {
       auto dotpos = op.symbol.find( '.' );
@@ -80,7 +83,13 @@ void_result asset_create_evaluator::do_evaluate( const asset_create_operation& o
       }
    }
 
-   core_fee_paid -= core_fee_paid.value/2;
+   }
+   else
+   {
+      auto dotpos = op.symbol.find( '.' );
+      if( dotpos != std::string::npos )
+          wlog( "Asset ${s} has a name which requires hardfork 385", ("s",op.symbol) );
+   }
 
    if( op.bitasset_opts )
    {
@@ -108,13 +117,29 @@ void_result asset_create_evaluator::do_evaluate( const asset_create_operation& o
    return void_result();
 } FC_CAPTURE_AND_RETHROW( (op) ) }
 
-object_id_type asset_create_evaluator::do_apply( const asset_create_operation& op )
+void asset_create_evaluator::pay_fee()
+{
+   fee_is_odd = core_fee_paid.value & 1;
+   core_fee_paid -= core_fee_paid.value/2;
+   generic_evaluator::pay_fee();
+}
+
+object_id_type asset_create_evaluator::do_apply(const asset_create_operation& op, uint32_t billed_cpu_time_us)
 { try {
+   bool hf_1005 = fee_is_odd && db().head_block_time() > HARDFORK_1005_TIME;
+
    const asset_dynamic_data_object& dyn_asset =
       db().create<asset_dynamic_data_object>( [&]( asset_dynamic_data_object& a ) {
          a.current_supply = 0;
-         a.fee_pool = core_fee_paid; //op.calculate_fee(db().current_fee_schedule()).value / 2;
+         a.fee_pool = core_fee_paid - (hf_1005 ? 1 : 0);
       });
+   if( fee_is_odd && !hf_1005 )
+   {
+      const auto& core_dd = db().get<asset_object>( asset_id_type() ).dynamic_data( db() );
+      db().modify( core_dd, [=]( asset_dynamic_data_object& dd ) {
+         dd.current_supply++;
+      });
+   }
 
    asset_bitasset_data_id_type bit_asset_id;
    if( op.bitasset_opts.valid() )
@@ -161,7 +186,7 @@ void_result asset_issue_evaluator::do_evaluate( const asset_issue_operation& o )
    return void_result();
 } FC_CAPTURE_AND_RETHROW( (o) ) }
 
-void_result asset_issue_evaluator::do_apply( const asset_issue_operation& o )
+void_result asset_issue_evaluator::do_apply(const asset_issue_operation& o, uint32_t billed_cpu_time_us)
 { try {
    db().adjust_balance( o.issue_to_account, o.asset_to_issue );
 
@@ -193,7 +218,7 @@ void_result asset_reserve_evaluator::do_evaluate( const asset_reserve_operation&
    return void_result();
 } FC_CAPTURE_AND_RETHROW( (o) ) }
 
-void_result asset_reserve_evaluator::do_apply( const asset_reserve_operation& o )
+void_result asset_reserve_evaluator::do_apply(const asset_reserve_operation& o, uint32_t billed_cpu_time_us)
 { try {
    db().adjust_balance( o.payer, -o.amount_to_reserve );
 
@@ -215,7 +240,7 @@ void_result asset_fund_fee_pool_evaluator::do_evaluate(const asset_fund_fee_pool
    return void_result();
 } FC_CAPTURE_AND_RETHROW( (o) ) }
 
-void_result asset_fund_fee_pool_evaluator::do_apply(const asset_fund_fee_pool_operation& o)
+void_result asset_fund_fee_pool_evaluator::do_apply(const asset_fund_fee_pool_operation& o, uint32_t billed_cpu_time_us)
 { try {
    db().adjust_balance(o.from_account, -o.amount);
 
@@ -264,7 +289,11 @@ void_result asset_update_evaluator::do_evaluate(const asset_update_operation& o)
              "Flag change is forbidden by issuer permissions");
 
    asset_to_update = &a;
-   FC_ASSERT( o.issuer == a.issuer, "", ("o.issuer", o.issuer)("a.issuer", a.issuer) );
+   if (a.issuer == GRAPHENE_NULL_ACCOUNT && a.get_id() == asset_id_type()) {
+       FC_ASSERT(o.issuer == account_id_type(), "", ("o.issuer", o.issuer)("a.issuer", a.issuer));
+   } else {
+       FC_ASSERT(o.issuer == a.issuer, "", ("o.issuer", o.issuer)("a.issuer", a.issuer));
+   }
 
    const auto& chain_parameters = d.get_global_properties().parameters;
 
@@ -278,7 +307,7 @@ void_result asset_update_evaluator::do_evaluate(const asset_update_operation& o)
    return void_result();
 } FC_CAPTURE_AND_RETHROW((o)) }
 
-void_result asset_update_evaluator::do_apply(const asset_update_operation& o)
+void_result asset_update_evaluator::do_apply(const asset_update_operation& o, uint32_t billed_cpu_time_us)
 { try {
    database& d = db();
 
@@ -294,10 +323,11 @@ void_result asset_update_evaluator::do_apply(const asset_update_operation& o)
          d.cancel_order(*itr);
    }
 
-   d.modify(*asset_to_update, [&](asset_object& a) {
-      if( o.new_issuer )
-         a.issuer = *o.new_issuer;
-      a.options = o.new_options;
+   d.modify(*asset_to_update, [&](asset_object &a) {
+       if (o.new_issuer) {
+           a.issuer = *o.new_issuer;
+       }
+       a.options = o.new_options;
    });
 
    return void_result();
@@ -338,7 +368,7 @@ void_result asset_update_bitasset_evaluator::do_evaluate(const asset_update_bita
    return void_result();
 } FC_CAPTURE_AND_RETHROW( (o) ) }
 
-void_result asset_update_bitasset_evaluator::do_apply(const asset_update_bitasset_operation& o)
+void_result asset_update_bitasset_evaluator::do_apply(const asset_update_bitasset_operation& o, uint32_t billed_cpu_time_us)
 { try {
    bool should_update_feeds = false;
    // If the minimum number of feeds to calculate a median has changed, we need to recalculate the median
@@ -375,7 +405,7 @@ void_result asset_update_feed_producers_evaluator::do_evaluate(const asset_updat
    return void_result();
 } FC_CAPTURE_AND_RETHROW( (o) ) }
 
-void_result asset_update_feed_producers_evaluator::do_apply(const asset_update_feed_producers_evaluator::operation_type& o)
+void_result asset_update_feed_producers_evaluator::do_apply(const asset_update_feed_producers_evaluator::operation_type& o, uint32_t billed_cpu_time_us)
 { try {
    db().modify(*bitasset_to_update, [&](asset_bitasset_data_object& a) {
       //This is tricky because I have a set of publishers coming in, but a map of publisher to feed is stored.
@@ -420,7 +450,7 @@ void_result asset_global_settle_evaluator::do_evaluate(const asset_global_settle
    return void_result();
 } FC_CAPTURE_AND_RETHROW( (op) ) }
 
-void_result asset_global_settle_evaluator::do_apply(const asset_global_settle_evaluator::operation_type& op)
+void_result asset_global_settle_evaluator::do_apply(const asset_global_settle_evaluator::operation_type& op, uint32_t billed_cpu_time_us)
 { try {
    database& d = db();
    d.globally_settle_asset( op.asset_to_settle(db()), op.settle_price );
@@ -443,7 +473,7 @@ void_result asset_settle_evaluator::do_evaluate(const asset_settle_evaluator::op
    return void_result();
 } FC_CAPTURE_AND_RETHROW( (op) ) }
 
-operation_result asset_settle_evaluator::do_apply(const asset_settle_evaluator::operation_type& op)
+operation_result asset_settle_evaluator::do_apply(const asset_settle_evaluator::operation_type& op, uint32_t billed_cpu_time_us)
 { try {
    database& d = db();
    d.adjust_balance(op.account, -op.amount);
@@ -522,7 +552,7 @@ void_result asset_publish_feeds_evaluator::do_evaluate(const asset_publish_feed_
    return void_result();
 } FC_CAPTURE_AND_RETHROW((o)) }
 
-void_result asset_publish_feeds_evaluator::do_apply(const asset_publish_feed_operation& o)
+void_result asset_publish_feeds_evaluator::do_apply(const asset_publish_feed_operation& o, uint32_t billed_cpu_time_us)
 { try {
 
    database& d = db();
@@ -553,7 +583,7 @@ void_result asset_claim_fees_evaluator::do_evaluate( const asset_claim_fees_oper
 } FC_CAPTURE_AND_RETHROW( (o) ) }
 
 
-void_result asset_claim_fees_evaluator::do_apply( const asset_claim_fees_operation& o )
+void_result asset_claim_fees_evaluator::do_apply(const asset_claim_fees_operation& o, uint32_t billed_cpu_time_us)
 { try {
    database& d = db();
 

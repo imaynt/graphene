@@ -259,6 +259,7 @@ struct database_fixture {
    const witness_object& create_witness(const account_object& owner,
                                         const fc::ecc::private_key& signing_private_key = generate_private_key("null_key"));
    uint64_t fund( const account_object& account, const asset& amount = asset(500000) );
+   signature_type sign_proxy_transfer_param(const private_key_type& key, const proxy_transfer_params& param);
    digest_type digest( const transaction& tx );
    void sign( signed_transaction& trx, const fc::ecc::private_key& key );
    const limit_order_object* create_sell_order( account_id_type user, const asset& amount, const asset& recv );
@@ -286,6 +287,7 @@ struct database_fixture {
 namespace test {
 /// set a reasonable expiration time for the transaction
 void set_expiration( const database& db, transaction& tx );
+void set_expiration(const database &db, transaction &tx, uint32_t time_seconds);
 
 bool _push_block( database& db, const signed_block& b, uint32_t skip_flags = 0 );
 processed_transaction _push_transaction( database& db, const signed_transaction& tx, uint32_t skip_flags = 0 );

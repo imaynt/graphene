@@ -32,7 +32,12 @@
 
 #include "../common/database_fixture.hpp"
 
+#include <graphene/chain/apply_context.hpp>
+#include <graphene/chain/transaction_context.hpp>
+
 using namespace graphene::chain;
+
+BOOST_FIXTURE_TEST_SUITE( database_tests, database_fixture )
 
 BOOST_AUTO_TEST_CASE( undo_test )
 {
@@ -59,3 +64,105 @@ BOOST_AUTO_TEST_CASE( undo_test )
       throw;
    }
 }
+
+BOOST_AUTO_TEST_CASE( merge_test )
+{
+   try {
+      database db;
+      auto ses = db._undo_db.start_undo_session();
+      db.create<account_balance_object>( [&]( account_balance_object& obj ){
+          obj.balance = 42;
+      });
+      ses.merge();
+
+      auto balance = db.get_balance( account_id_type(), asset_id_type() );
+      BOOST_CHECK_EQUAL( 42, balance.amount.value );
+   } catch ( const fc::exception& e )
+   {
+      edump( (e.to_detail_string()) );
+      throw;
+   }
+}
+
+/**
+ * Check that database modify() functors that throw do not get caught by boost, which will remove the object
+ */
+BOOST_AUTO_TEST_CASE(failed_modify_test)
+{ try {
+    database db;
+    // Create dummy object
+    const auto &obj = db.create<account_balance_object>([](account_balance_object &obj) {
+            obj.owner = account_id_type(123);
+            });
+    account_balance_id_type obj_id = obj.id;
+    BOOST_CHECK_EQUAL(obj.owner.instance.value, 123);
+
+    // Modify dummy object, check that changes stick
+    db.modify(obj, [](account_balance_object &obj) {
+            obj.owner = account_id_type(234);
+            });
+    BOOST_CHECK_EQUAL(obj_id(db).owner.instance.value, 234);
+
+    // Throw exception when modifying object, check that object still exists after
+    BOOST_CHECK_THROW(db.modify(obj, [](account_balance_object &obj) {
+                throw 5;
+                }),
+            fc::assert_exception);
+    BOOST_CHECK_NE(db.find_object(obj_id), nullptr);
+} FC_LOG_AND_RETHROW() }
+
+BOOST_AUTO_TEST_CASE( db_store_i64_undo )
+{
+   try {
+      database db;
+      auto ses = db._undo_db.start_undo_session();
+      auto cpu_param = db.get_cpu_limit();
+
+      const contract_call_operation op;
+      transaction_context trx_context(db, account_id_type().instance, cpu_param.trx_cpu_limit);
+      apply_context ctx{db, trx_context, {account_id_type(), N(hi), {}}, optional<asset>()};
+      auto i = ctx.db_store_i64(1,1,name("good"), 1, "good", 4);
+
+      ses.undo();
+
+      char *p = new char[10];
+
+      auto t = ctx.db_get_i64(i, p, 2);
+
+      BOOST_CHECK_EQUAL( t, 0 );
+      delete []p;
+   } catch ( const fc::exception& e )
+   {
+      edump( (e.to_detail_string()) );
+      throw;
+   }
+}
+
+BOOST_AUTO_TEST_CASE( db_store_i64_commit )
+{
+   try {
+      database db;
+      auto ses = db._undo_db.start_undo_session();
+      auto cpu_param = db.get_cpu_limit();
+
+      const contract_call_operation op;
+      transaction_context trx_context(db, account_id_type().instance, cpu_param.trx_cpu_limit);
+      apply_context ctx{db, trx_context, {account_id_type(), N(hi), {}}, optional<asset>()};
+      auto i = ctx.db_store_i64(1,1,name("good"), 1, "good", 4);
+
+      ses.commit();
+
+      char *p = new char[10];
+
+      auto t = ctx.db_get_i64(i, p, 3);
+
+      BOOST_CHECK_EQUAL( t, 3 );
+      delete []p;
+   } catch ( const fc::exception& e )
+   {
+      edump( (e.to_detail_string()) );
+      throw;
+   }
+}
+
+BOOST_AUTO_TEST_SUITE_END()

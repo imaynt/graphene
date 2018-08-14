@@ -91,7 +91,6 @@ namespace graphene { namespace db {
    };
 
    class object;
-   class object_database;
 
    template<uint8_t SpaceID, uint8_t TypeID, typename T = object>
    struct object_id
@@ -164,7 +163,7 @@ struct reflector<graphene::db::object_id<SpaceID,TypeID,T> >
     static inline void visit( const Visitor& visitor )
     {
        typedef decltype(((type*)nullptr)->instance) member_type;
-       visitor.TEMPLATE operator()<member_type,type,&type::instance>( "instance" );
+       visitor.FC_TEMPLATE operator()<member_type,type,&type::instance>( "instance" );
     }
 };
 

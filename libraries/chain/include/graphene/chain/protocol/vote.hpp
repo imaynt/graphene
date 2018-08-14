@@ -61,9 +61,9 @@ struct vote_id_type
    friend size_t hash_value( vote_id_type v ) { return std::hash<uint32_t>()(v.content); }
    enum vote_type
    {
-      committee,
-      witness,
-      worker,
+      committee,//0
+      witness,//1
+      worker,//2
       VOTE_TYPE_COUNT
    };
 
@@ -146,7 +146,6 @@ void from_variant( const fc::variant& var, graphene::chain::vote_id_type& vo );
 
 } // fc
 
-FC_REFLECT_TYPENAME( graphene::chain::vote_id_type::vote_type )
 FC_REFLECT_TYPENAME( fc::flat_set<graphene::chain::vote_id_type> )
 
 FC_REFLECT_ENUM( graphene::chain::vote_id_type::vote_type, (witness)(committee)(worker)(VOTE_TYPE_COUNT) )

@@ -80,7 +80,7 @@ database_fixture::database_fixture()
    genesis_state.initial_timestamp = time_point_sec( GRAPHENE_TESTING_GENESIS_TIMESTAMP );
 
    genesis_state.initial_active_witnesses = 10;
-   for( int i = 0; i < genesis_state.initial_active_witnesses; ++i )
+   for( unsigned int i = 0; i < genesis_state.initial_active_witnesses; ++i )
    {
       auto name = "init"+fc::to_string(i);
       genesis_state.initial_accounts.emplace_back(name,
@@ -93,9 +93,28 @@ database_fixture::database_fixture()
    genesis_state.initial_parameters.current_fees->zero_all_fees();
    open_database();
 
-   // app.initialize();
+   // add account tracking for ahplugin for special test case with track-account enabled
+   if( !options.count("track-account") && boost::unit_test::framework::current_test_case().p_name.value == "track_account") {
+      std::vector<std::string> track_account;
+      std::string track = "\"1.2.17\"";
+      track_account.push_back(track);
+      options.insert(std::make_pair("track-account", boost::program_options::variable_value(track_account, false)));
+   }
+   // account tracking 2 accounts
+   if( !options.count("track-account") && boost::unit_test::framework::current_test_case().p_name.value == "track_account2") {
+      std::vector<std::string> track_account;
+      std::string track = "\"1.2.0\"";
+      track_account.push_back(track);
+      track = "\"1.2.16\"";
+      track_account.push_back(track);
+      options.insert(std::make_pair("track-account", boost::program_options::variable_value(track_account, false)));
+   }
+   options.insert(std::make_pair("partial-operations", boost::program_options::variable_value(false, false)));
+
    ahplugin->plugin_set_app(&app);
    ahplugin->plugin_initialize(options);
+
+   options.insert(std::make_pair("bucket-size", boost::program_options::variable_value(string("[15]"),false)));
    mhplugin->plugin_set_app(&app);
    mhplugin->plugin_initialize(options);
 
@@ -124,9 +143,6 @@ database_fixture::~database_fixture()
       verify_account_history_plugin_index();
       BOOST_CHECK( db.get_node_properties().skip_flags == database::skip_nothing );
    }
-
-   if( data_dir )
-      db.close();
    return;
 } FC_CAPTURE_AND_RETHROW() }
 
@@ -184,15 +200,15 @@ void database_fixture::verify_asset_supplies( const database& db )
    }
    for( const asset_object& asset_obj : db.get_index_type<asset_index>().indices() )
    {
-      total_balances[asset_obj.id] += asset_obj.dynamic_asset_data_id(db).accumulated_fees;
-      if( asset_obj.id != asset_id_type() )
-         BOOST_CHECK_EQUAL(total_balances[asset_obj.id].value, asset_obj.dynamic_asset_data_id(db).current_supply.value);
-      total_balances[asset_id_type()] += asset_obj.dynamic_asset_data_id(db).fee_pool;
+      const auto& dasset_obj = asset_obj.dynamic_asset_data_id(db);
+      total_balances[asset_obj.id] += dasset_obj.accumulated_fees;
+      total_balances[asset_id_type()] += dasset_obj.fee_pool;
       if( asset_obj.is_market_issued() )
       {
          const auto& bad = asset_obj.bitasset_data(db);
          total_balances[bad.options.short_backing_asset] += bad.settlement_fund;
       }
+      total_balances[asset_obj.id] += dasset_obj.confidential_supply.value;
    }
    for( const vesting_balance_object& vbo : db.get_index_type< vesting_balance_index >().indices() )
       total_balances[ vbo.balance.asset_id ] += vbo.balance.amount;
@@ -206,8 +222,12 @@ void database_fixture::verify_asset_supplies( const database& db )
       BOOST_CHECK_EQUAL(item.first(db).dynamic_asset_data_id(db).current_supply.value, item.second.value);
    }
 
+   for( const asset_object& asset_obj : db.get_index_type<asset_index>().indices() )
+   {
+      BOOST_CHECK_EQUAL(total_balances[asset_obj.id].value, asset_obj.dynamic_asset_data_id(db).current_supply.value);
+   }
+
    BOOST_CHECK_EQUAL( core_in_orders.value , reported_core_in_orders.value );
-   BOOST_CHECK_EQUAL( total_balances[asset_id_type()].value , core_asset_data.current_supply.value - core_asset_data.confidential_supply.value);
 //   wlog("***  End  asset supply verification ***");
 }
 
@@ -299,7 +319,7 @@ void database_fixture::open_database()
 {
    if( !data_dir ) {
       data_dir = fc::temp_directory( graphene::utilities::temp_directory_path() );
-      db.open(data_dir->path(), [this]{return genesis_state;});
+      db.open(data_dir->path(), [this]{return genesis_state;}, "test");
    }
 }
 
@@ -674,6 +694,13 @@ uint64_t database_fixture::fund(
 void database_fixture::sign(signed_transaction& trx, const fc::ecc::private_key& key)
 {
    trx.sign( key, db.get_chain_id() );
+}
+
+signature_type database_fixture::sign_proxy_transfer_param(const private_key_type& key, const proxy_transfer_params& param)
+{
+    digest_type::encoder enc;
+    fc::raw::pack(enc, param);
+    return key.sign_compact(enc.result());
 }
 
 digest_type database_fixture::digest( const transaction& tx )
@@ -1062,6 +1089,14 @@ void set_expiration( const database& db, transaction& tx )
    tx.set_reference_block(db.head_block_id());
    tx.set_expiration( db.head_block_time() + fc::seconds( params.block_interval * (params.maintenance_skip_slots + 1) * 3 ) );
    return;
+}
+
+void set_expiration(const database &db, transaction &tx, uint32_t time_seconds)
+{
+    const chain_parameters &params = db.get_global_properties().parameters;
+    tx.set_reference_block(db.head_block_id());
+    tx.set_expiration(db.head_block_time() + fc::seconds(params.block_interval * (params.maintenance_skip_slots + 1) * 3 + time_seconds));
+    return;
 }
 
 bool _push_block( database& db, const signed_block& b, uint32_t skip_flags /* = 0 */ )

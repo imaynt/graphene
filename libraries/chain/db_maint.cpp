@@ -126,7 +126,7 @@ void database::pay_workers( share_type& budget )
 
    // worker with more votes is preferred
    // if two workers exactly tie for votes, worker with lower ID is preferred
-   std::sort(active_workers.begin(), active_workers.end(), [this](const worker_object& wa, const worker_object& wb) {
+   std::sort(active_workers.begin(), active_workers.end(), [](const worker_object& wa, const worker_object& wb) {
       share_type wa_vote = wa.approving_stake();
       share_type wb_vote = wb.approving_stake();
       if( wa_vote != wb_vote )
@@ -244,7 +244,7 @@ void database::update_active_witnesses()
 void database::update_active_committee_members()
 { try {
    assert( _committee_count_histogram_buffer.size() > 0 );
-   share_type stake_target = (_total_voting_stake-_witness_count_histogram_buffer[0]) / 2;
+   share_type stake_target = (_total_voting_stake-_committee_count_histogram_buffer[0]) / 2;
 
    /// accounts that vote for 0 or 1 witness do not get to express an opinion on
    /// the number of witnesses to have (they abstain and are non-voting accounts)
@@ -751,6 +751,18 @@ void database::perform_chain_maintenance(const signed_block& next_block, const g
             uint64_t voting_stake = stats.total_core_in_orders.value
                   + (stake_account.cashback_vb.valid() ? (*stake_account.cashback_vb)(d).balance.amount.value: 0)
                   + d.get_balance(stake_account.get_id(), asset_id_type()).amount.value;
+            // dlog("account ${a}, core voting_stake ${v}", ("a", stake_account.get_id())("v", voting_stake));
+
+            // voting_stake, add GXS
+            if (d.head_block_time() > HARDFORK_1002_TIME) {
+                const auto& asset_by_symbol = d.get_index_type<asset_index>().indices().get<by_symbol>();
+                auto gxs = asset_by_symbol.find(GRAPHENE_SYMBOL_GXS);
+                if (gxs != asset_by_symbol.end()) {
+                    double exchange_rate = gxs->options.core_exchange_rate.to_real();
+                    voting_stake += d.get_balance(stake_account.get_id(), gxs->get_id()).amount.value * exchange_rate;
+                }
+                // dlog("total voting_stake ${v}", ("v", voting_stake));
+            }
 
             for( vote_id_type id : opinion_account.options.votes )
             {

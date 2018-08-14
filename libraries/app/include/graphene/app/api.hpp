@@ -24,6 +24,7 @@
 #pragma once
 
 #include <graphene/app/database_api.hpp>
+#include <graphene/app/network_broadcast_api.hpp>
 
 #include <graphene/chain/protocol/types.hpp>
 #include <graphene/chain/protocol/confidential.hpp>
@@ -53,6 +54,7 @@ namespace graphene { namespace app {
    using namespace std;
 
    class application;
+   class network_broadcast_api;
 
    struct verify_range_result
    {
@@ -71,6 +73,23 @@ namespace graphene { namespace app {
       string                        message_out;
    };
 
+   struct account_asset_balance
+   {
+      string          name;
+      account_id_type account_id;
+      share_type      amount;
+   };
+   struct asset_holders
+   {
+      asset_id_type   asset_id;
+      int             count;
+   };
+
+   struct history_operation_detail {
+      uint32_t total_without_operations = 0;
+      vector<operation_history_object> operation_history_objs;
+   };
+   
    /**
     * @brief The history_api class implements the RPC API for account history
     *
@@ -93,6 +112,35 @@ namespace graphene { namespace app {
                                                               operation_history_id_type stop = operation_history_id_type(),
                                                               unsigned limit = 100,
                                                               operation_history_id_type start = operation_history_id_type())const;
+
+         /**
+          * @brief Get operations relevant to the specificed account
+          * @param account The account whose history should be queried
+          * @param operation_indexs type of the operations
+          * @param start the counts of historys from the earliest operation
+          * @param limit Maximum number of operations to retrieve (must not exceed 100)
+          * @return history_operation_detail.
+          */
+          history_operation_detail get_account_history_by_operations( account_id_type account,
+                                                                              vector<uint32_t> operation_indexs,
+                                                                              uint32_t start,
+                                                                              unsigned limit);
+
+         /**
+          * @brief Get only asked operations relevant to the specified account
+          * @param account The account whose history should be queried
+          * @param operation_id The ID of the operation we want to get operations in the account( 0 = transfer , 1 = limit order create, ...)
+          * @param stop ID of the earliest operation to retrieve
+          * @param limit Maximum number of operations to retrieve (must not exceed 100)
+          * @param start ID of the most recent operation to retrieve
+          * @return A list of operations performed by account, ordered from most recent to oldest.
+          */
+         vector<operation_history_object> get_account_history_operations(account_id_type account,
+                                                                         int operation_id,
+                                                                         operation_history_id_type start = operation_history_id_type(),
+                                                                         operation_history_id_type stop = operation_history_id_type(),
+                                                                         unsigned limit = 100)const;
+
          /**
           * @breif Get operations relevant to the specified account referenced
           * by an event numbering specific to the account. The current number of operations
@@ -119,54 +167,20 @@ namespace graphene { namespace app {
    };
 
    /**
-    * @brief The network_broadcast_api class allows broadcasting of transactions.
+    * @brief Block api
     */
-   class network_broadcast_api : public std::enable_shared_from_this<network_broadcast_api>
+   class block_api
    {
-      public:
-         network_broadcast_api(application& a);
+   public:
+      block_api(graphene::chain::database& db);
+      ~block_api();
 
-         struct transaction_confirmation
-         {
-            transaction_id_type   id;
-            uint32_t              block_num;
-            uint32_t              trx_num;
-            processed_transaction trx;
-         };
+      vector<optional<signed_block>> get_blocks(uint32_t block_num_from, uint32_t block_num_to)const;
 
-         typedef std::function<void(variant/*transaction_confirmation*/)> confirmation_callback;
-
-         /**
-          * @brief Broadcast a transaction to the network
-          * @param trx The transaction to broadcast
-          *
-          * The transaction will be checked for validity in the local database prior to broadcasting. If it fails to
-          * apply locally, an error will be thrown and the transaction will not be broadcast.
-          */
-         void broadcast_transaction(const signed_transaction& trx);
-
-         /** this version of broadcast transaction registers a callback method that will be called when the transaction is
-          * included into a block.  The callback method includes the transaction id, block number, and transaction number in the
-          * block.
-          */
-         void broadcast_transaction_with_callback( confirmation_callback cb, const signed_transaction& trx);
-
-         void broadcast_block( const signed_block& block );
-
-         /**
-          * @brief Not reflected, thus not accessible to API clients.
-          *
-          * This function is registered to receive the applied_block
-          * signal from the chain database when a block is received.
-          * It then dispatches callbacks to clients who have requested
-          * to be notified when a particular txid is included in a block.
-          */
-         void on_applied_block( const signed_block& b );
-      private:
-         boost::signals2::scoped_connection             _applied_block_connection;
-         map<transaction_id_type,confirmation_callback> _callbacks;
-         application&                                   _app;
+   private:
+      graphene::chain::database& _db;
    };
+
 
    /**
     * @brief The network_node_api class allows maintenance of p2p connections.
@@ -253,6 +267,23 @@ namespace graphene { namespace app {
    };
 
    /**
+    * @brief
+    */
+   class asset_api
+   {
+      public:
+         asset_api(graphene::chain::database& db);
+         ~asset_api();
+
+         vector<account_asset_balance> get_asset_holders( asset_id_type asset_id )const;
+         int get_asset_holders_count( asset_id_type asset_id )const;
+         vector<asset_holders> get_all_asset_holders() const;
+
+      private:
+         graphene::chain::database& _db;
+   };
+
+   /**
     * @brief The login_api class implements the bottom layer of the RPC API
     *
     * All other APIs must be requested from this API.
@@ -273,6 +304,8 @@ namespace graphene { namespace app {
           * has sucessfully authenticated.
           */
          bool login(const string& user, const string& password);
+         /// @brief Retrieve the network block API
+         fc::api<block_api> block()const;
          /// @brief Retrieve the network broadcast API
          fc::api<network_broadcast_api> network_broadcast()const;
          /// @brief Retrieve the database API
@@ -283,44 +316,51 @@ namespace graphene { namespace app {
          fc::api<network_node_api> network_node()const;
          /// @brief Retrieve the cryptography API
          fc::api<crypto_api> crypto()const;
+         /// @brief Retrieve the asset API
+         fc::api<asset_api> asset()const;
          /// @brief Retrieve the debug API (if available)
          fc::api<graphene::debug_witness::debug_api> debug()const;
 
-      private:
          /// @brief Called to enable an API, not reflected.
          void enable_api( const string& api_name );
+      private:
 
          application& _app;
+         optional< fc::api<block_api> > _block_api;
          optional< fc::api<database_api> > _database_api;
          optional< fc::api<network_broadcast_api> > _network_broadcast_api;
          optional< fc::api<network_node_api> > _network_node_api;
          optional< fc::api<history_api> >  _history_api;
          optional< fc::api<crypto_api> > _crypto_api;
+         optional< fc::api<asset_api> > _asset_api;
          optional< fc::api<graphene::debug_witness::debug_api> > _debug_api;
    };
 
 }}  // graphene::app
 
-FC_REFLECT( graphene::app::network_broadcast_api::transaction_confirmation,
-        (id)(block_num)(trx_num)(trx) )
 FC_REFLECT( graphene::app::verify_range_result,
         (success)(min_val)(max_val) )
 FC_REFLECT( graphene::app::verify_range_proof_rewind_result,
         (success)(min_val)(max_val)(value_out)(blind_out)(message_out) )
+FC_REFLECT( graphene::app::history_operation_detail,
+            (total_without_operations)(operation_history_objs) )
 //FC_REFLECT_TYPENAME( fc::ecc::compact_signature );
 //FC_REFLECT_TYPENAME( fc::ecc::commitment_type );
 
+FC_REFLECT( graphene::app::account_asset_balance, (name)(account_id)(amount) );
+FC_REFLECT( graphene::app::asset_holders, (asset_id)(count) );
+
 FC_API(graphene::app::history_api,
        (get_account_history)
+       (get_account_history_by_operations)
+       (get_account_history_operations)
        (get_relative_account_history)
        (get_fill_order_history)
        (get_market_history)
        (get_market_history_buckets)
      )
-FC_API(graphene::app::network_broadcast_api,
-       (broadcast_transaction)
-       (broadcast_transaction_with_callback)
-       (broadcast_block)
+FC_API(graphene::app::block_api,
+       (get_blocks)
      )
 FC_API(graphene::app::network_node_api,
        (get_info)
@@ -341,12 +381,19 @@ FC_API(graphene::app::crypto_api,
        (verify_range_proof_rewind)
        (range_get_info)
      )
+FC_API(graphene::app::asset_api,
+       (get_asset_holders)
+	   (get_asset_holders_count)
+       (get_all_asset_holders)
+     )
 FC_API(graphene::app::login_api,
        (login)
+       (block)
        (network_broadcast)
        (database)
        (history)
        (network_node)
        (crypto)
+       (asset)
        (debug)
      )

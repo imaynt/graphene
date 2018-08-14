@@ -22,6 +22,7 @@
  * THE SOFTWARE.
  */
 #include <graphene/chain/protocol/account.hpp>
+#include <graphene/chain/hardfork.hpp>
 
 namespace graphene { namespace chain {
 
@@ -56,17 +57,27 @@ namespace graphene { namespace chain {
  * - Length is between (inclusive) GRAPHENE_MIN_ACCOUNT_NAME_LENGTH and GRAPHENE_MAX_ACCOUNT_NAME_LENGTH
  */
 bool is_valid_name( const string& name )
-{
-#if GRAPHENE_MIN_ACCOUNT_NAME_LENGTH < 3
-#error This is_valid_name implementation implicitly enforces minimum name length of 3.
-#endif
-
+{ try {
     const size_t len = name.size();
+
+    /** this condition will prevent witnesses from including new names before this time, but
+     * allow them after this time.   This check can be removed from the code after HARDFORK_385_TIME
+     * has passed.
+     */
+    if( fc::time_point::now() < fc::time_point(HARDFORK_385_TIME) )
+       FC_ASSERT( len >= 3 );
+
     if( len < GRAPHENE_MIN_ACCOUNT_NAME_LENGTH )
+    {
+        ilog(".");
         return false;
+    }
 
     if( len > GRAPHENE_MAX_ACCOUNT_NAME_LENGTH )
+    {
+        ilog(".");
         return false;
+    }
 
     size_t begin = 0;
     while( true )
@@ -74,8 +85,11 @@ bool is_valid_name( const string& name )
        size_t end = name.find_first_of( '.', begin );
        if( end == std::string::npos )
           end = len;
-       if( end - begin < 3 )
+       if( (end - begin) < GRAPHENE_MIN_ACCOUNT_NAME_LENGTH )
+       {
+          idump( (name) (end)(len)(begin)(GRAPHENE_MAX_ACCOUNT_NAME_LENGTH) );
           return false;
+       }
        switch( name[begin] )
        {
           case 'a': case 'b': case 'c': case 'd': case 'e': case 'f': case 'g': case 'h':
@@ -84,6 +98,7 @@ bool is_valid_name( const string& name )
           case 'y': case 'z':
              break;
           default:
+          ilog( ".");
              return false;
        }
        switch( name[end-1] )
@@ -96,6 +111,7 @@ bool is_valid_name( const string& name )
           case '8': case '9':
              break;
           default:
+          ilog( ".");
              return false;
        }
        for( size_t i=begin+1; i<end-1; i++ )
@@ -111,6 +127,7 @@ bool is_valid_name( const string& name )
              case '-':
                 break;
              default:
+                ilog( ".");
                 return false;
           }
        }
@@ -119,7 +136,7 @@ bool is_valid_name( const string& name )
        begin = end+1;
     }
     return true;
-}
+} FC_CAPTURE_AND_RETHROW( (name) ) }
 
 bool is_cheap_name( const string& n )
 {
@@ -260,7 +277,6 @@ share_type account_upgrade_operation::calculate_fee(const fee_parameters_type& k
    return k.membership_annual_fee;
 }
 
-
 void account_upgrade_operation::validate() const
 {
    FC_ASSERT( fee.amount >= 0 );
@@ -271,5 +287,12 @@ void account_transfer_operation::validate()const
    FC_ASSERT( fee.amount >= 0 );
 }
 
-
+void account_upgrade_merchant_operation::validate() const
+{
+   FC_ASSERT( fee.amount >= 0 );
+}
+void account_upgrade_datasource_operation::validate() const
+{
+   FC_ASSERT( fee.amount >= 0 );
+}
 } } // graphene::chain

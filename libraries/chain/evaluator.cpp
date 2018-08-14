@@ -40,17 +40,17 @@
 namespace graphene { namespace chain {
 database& generic_evaluator::db()const { return trx_state->db(); }
 
-   operation_result generic_evaluator::start_evaluate( transaction_evaluation_state& eval_state, const operation& op, bool apply )
+   operation_result generic_evaluator::start_evaluate(transaction_evaluation_state& eval_state, const operation& op, bool apply, uint32_t billed_cpu_time_us)
    { try {
       trx_state   = &eval_state;
       //check_required_authorities(op);
       auto result = evaluate( op );
 
-      if( apply ) result = this->apply( op );
+      if (apply) result = this->apply(op, billed_cpu_time_us);
       return result;
    } FC_CAPTURE_AND_RETHROW() }
 
-   void generic_evaluator::prepare_fee(account_id_type account_id, asset fee)
+   void generic_evaluator::prepare_fee(account_id_type account_id, asset fee, const operation& o)
    {
       const database& d = db();
       fee_from_account = fee;

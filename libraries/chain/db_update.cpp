@@ -31,6 +31,7 @@
 #include <graphene/chain/market_object.hpp>
 #include <graphene/chain/proposal_object.hpp>
 #include <graphene/chain/transaction_object.hpp>
+#include <graphene/chain/signature_object.hpp>
 #include <graphene/chain/withdraw_permission_object.hpp>
 #include <graphene/chain/witness_object.hpp>
 
@@ -149,6 +150,7 @@ void database::update_last_irreversible_block()
 
    if( new_last_irreversible_block_num > dpo.last_irreversible_block_num )
    {
+      //dlog("last_irreversible_block_num: ${new}", ("new", new_last_irreversible_block_num));
       modify( dpo, [&]( dynamic_global_property_object& _dpo )
       {
          _dpo.last_irreversible_block_num = new_last_irreversible_block_num;
@@ -156,14 +158,23 @@ void database::update_last_irreversible_block()
    }
 }
 
+void database::clear_expired_signature_objs()
+{ try {
+   //Look for expired signature_objs in the deduplication list, and remove them.
+   auto& signature_idx = static_cast<signature_index&>(get_mutable_index(implementation_ids, impl_signature_object_type));
+   const auto& dedupe_index = signature_idx.indices().get<by_expiration>();
+   while ((!dedupe_index.empty()) && (head_block_time() > dedupe_index.begin()->expiration))
+       signature_idx.remove(*dedupe_index.begin());
+} FC_CAPTURE_AND_RETHROW() }
+
 void database::clear_expired_transactions()
 { try {
    //Look for expired transactions in the deduplication list, and remove them.
    //Transactions must have expired by at least two forking windows in order to be removed.
    auto& transaction_idx = static_cast<transaction_index&>(get_mutable_index(implementation_ids, impl_transaction_object_type));
    const auto& dedupe_index = transaction_idx.indices().get<by_expiration>();
-   while( (!dedupe_index.empty()) && (head_block_time() > dedupe_index.rbegin()->trx.expiration) )
-      transaction_idx.remove(*dedupe_index.rbegin());
+   while( (!dedupe_index.empty()) && (head_block_time() > dedupe_index.begin()->trx.expiration) )
+      transaction_idx.remove(*dedupe_index.begin());
 } FC_CAPTURE_AND_RETHROW() }
 
 void database::clear_expired_proposals()

@@ -38,12 +38,16 @@
 #include <graphene/chain/withdraw_permission_object.hpp>
 #include <graphene/chain/witness_object.hpp>
 #include <graphene/chain/worker_object.hpp>
+#include <graphene/chain/wast_to_wasm.hpp>
+#include <graphene/chain/abi_def.hpp>
 
 #include <graphene/utilities/tempdir.hpp>
 
 #include <fc/crypto/digest.hpp>
 
 #include "../common/database_fixture.hpp"
+
+#include "test_wasts.hpp"
 
 using namespace graphene::chain;
 using namespace graphene::chain::test;
@@ -83,6 +87,168 @@ BOOST_AUTO_TEST_CASE( withdraw_permission_create )
    sign( trx, nathan_private_key );
    db.push_transaction( trx );
    trx.clear();
+} FC_LOG_AND_RETHROW() }
+
+BOOST_AUTO_TEST_CASE(proxy_transfer_test)
+{ try {
+   // alice --> dan, and bob is proxy_account
+   ACTOR(alice);
+   ACTOR(bob);
+   ACTOR(dan);
+
+   transfer(account_id_type(), alice_id, asset(10000));
+   transfer(account_id_type(), bob_id, asset(10000));
+   generate_block();
+
+   // construct trx
+   proxy_transfer_params param;
+   param.from = alice_id;
+   param.to = dan_id;
+   param.proxy_account = bob_id;
+   param.percentage = 1000; // 10%
+   param.amount = asset(5000);
+   param.memo = fc::json::to_string(alice_private_key.get_public_key());
+   param.expiration = db.head_block_time() + fc::hours(1);
+   param.signatures.push_back(sign_proxy_transfer_param(alice_private_key, param));
+
+   proxy_transfer_operation op;
+   op.proxy_memo = fc::json::to_string(bob_private_key.get_public_key());
+   op.fee = asset(2000);
+   op.request_params = param;
+
+   trx.clear();
+   trx.operations.push_back(op);
+   set_expiration(db, trx);
+   sign(trx, bob_private_key);
+   idump((trx));
+   PUSH_TX(db, trx);
+
+   // check balance
+   BOOST_TEST_MESSAGE("check account balances");
+   const auto &core = asset_id_type()(db);
+   BOOST_REQUIRE_EQUAL(get_balance(alice_id(db), core), 5000); // 10000 - 5000
+   BOOST_REQUIRE_EQUAL(get_balance(dan_id(db), core), 4500); // 5000 - (5000 * 10%)
+   BOOST_REQUIRE_EQUAL(get_balance(bob_id(db), core), 8500); // 10000 - 2000 + (5000 * 10%)
+} FC_LOG_AND_RETHROW() }
+
+BOOST_AUTO_TEST_CASE(contract_test)
+{ try {
+   ACTOR(alice);
+
+   transfer(account_id_type(), alice_id, asset(1000000));
+   generate_block();
+
+   // create contract
+   BOOST_TEST_MESSAGE("contract deploy test");
+   contract_deploy_operation deploy_op;
+   deploy_op.account = alice_id;
+   deploy_op.name = "bob";
+   deploy_op.vm_type = "0";
+   deploy_op.vm_version = "0";
+   auto wasm = graphene::chain::wast_to_wasm(contract_test_wast_code);
+   deploy_op.code = bytes(wasm.begin(), wasm.end());
+   deploy_op.abi = fc::json::from_string(contract_abi).as<abi_def>();
+   deploy_op.fee = asset(2000);
+   trx.operations.push_back(deploy_op);
+   set_expiration(db, trx);
+   sign(trx, alice_private_key);
+   idump((trx));
+   PUSH_TX(db, trx);
+   trx.clear();
+
+   // call contract, action hi
+   auto& contract_obj = get_account("bob");
+   string s = "123";
+
+   contract_call_operation op;
+   op.account = alice_id;
+   op.contract_id = contract_obj.id;
+   op.method_name = N(hi);
+   op.data = bytes(s.begin(), s.end());
+   op.fee = db.get_global_properties().parameters.current_fees->calculate_fee(op);
+   trx.operations.push_back(op);
+   set_expiration(db, trx);
+   sign(trx, alice_private_key);
+   idump((trx));
+   PUSH_TX(db, trx);
+   trx.clear();
+
+   // call contract, action hi, deposit asset
+   contract_call_operation call_op;
+   call_op.account = alice_id;
+   call_op.account = alice_id;
+   call_op.contract_id = contract_obj.id;
+   call_op.amount = share_type(100);
+   call_op.method_name = N(hi);
+   call_op.data = bytes(s.begin(), s.end());
+   call_op.fee = db.get_global_properties().parameters.current_fees->calculate_fee(call_op);
+   trx.operations.push_back(call_op);
+   set_expiration(db, trx);
+   sign(trx, alice_private_key);
+   idump((trx));
+   PUSH_TX(db, trx);
+   BOOST_REQUIRE_EQUAL(get_balance(account_id_type(contract_obj.id)(db), asset_id_type()(db)), 100);
+   trx.clear();
+
+} FC_LOG_AND_RETHROW() }
+
+BOOST_AUTO_TEST_CASE(contract_block_cpu_limit_test)
+{ try {
+    ACTOR(alice);
+
+    transfer(account_id_type(), alice_id, asset(1000000000));
+    generate_block();
+
+    // create contract
+    BOOST_TEST_MESSAGE("contract deploy test");
+    contract_deploy_operation deploy_op;
+    deploy_op.account = alice_id;
+    deploy_op.name = "bob";
+    deploy_op.vm_type = "0";
+    deploy_op.vm_version = "0";
+    auto wasm = graphene::chain::wast_to_wasm(contract_test_wast_code);
+    deploy_op.code = bytes(wasm.begin(), wasm.end());
+    deploy_op.abi = fc::json::from_string(contract_abi).as<abi_def>();
+    deploy_op.fee = asset(2000);
+    trx.operations.push_back(deploy_op);
+    set_expiration(db, trx);
+    sign(trx, alice_private_key);
+    idump((trx));
+    PUSH_TX(db, trx);
+    trx.clear();
+
+    // call contract, action hi
+    auto& contract_obj = get_account("bob");
+    
+    //call_contract nathan abkax55152 {"amount":10000000,"asset_id":1.3.0} issue "{\"pubkey\":\"GXC81z4c6gEHw57TxHfZyzjA52djZzYGX7KN8sJQcDyg6yitwov5b\",\"number\":10}" GXC true
+    //string data = "3547584338317a346336674548773537547848665a797a6a413532646a5a7a594758374b4e38734a516344796736796974776f7635620a00000000000000";
+    string data = "5GXC81z4c6gEHw57TxHfZyzjA52djZzYGX7KN8sJQcDyg6yitwov5b\x0a\x00\x00\x00\x00\x00\x00\x00";
+
+    contract_call_operation issue_op;
+    issue_op.account = alice_id;
+    issue_op.contract_id = contract_obj.id;
+    issue_op.method_name = N(issue);
+    issue_op.amount = asset{10000000};
+    issue_op.data = bytes(data.begin(), data.end());
+    issue_op.fee = db.get_global_properties().parameters.current_fees->calculate_fee(issue_op);
+    
+    contract_call_operation close_op;
+    close_op.account = alice_id;
+    close_op.contract_id = contract_obj.id;
+    close_op.method_name = N(close);
+    close_op.data = bytes{};
+    close_op.fee = db.get_global_properties().parameters.current_fees->calculate_fee(close_op);
+    for (size_t i = 0; i < 300; ++i) {
+        trx.clear();
+        trx.operations.push_back(issue_op);
+        trx.operations.push_back(close_op);
+        set_expiration(db, trx, i);
+        sign(trx, alice_private_key);
+        PUSH_TX(db, trx);
+    }
+    generate_block();
+    trx.clear();
+
 } FC_LOG_AND_RETHROW() }
 
 BOOST_AUTO_TEST_CASE( withdraw_permission_test )
@@ -409,7 +575,7 @@ BOOST_AUTO_TEST_CASE( feed_limit_test )
    BOOST_TEST_MESSAGE("Checking current_feed is null");
    BOOST_CHECK(bitasset.current_feed.settlement_price.is_null());
 
-   BOOST_TEST_MESSAGE("Setting minimum feeds to 3");
+  BOOST_TEST_MESSAGE("Setting minimum feeds to 3");
    op.new_options.minimum_feeds = 3;
    trx.clear();
    trx.operations = {op};
@@ -1068,7 +1234,7 @@ BOOST_AUTO_TEST_CASE( balance_object_test )
    auto _sign = [&]( signed_transaction& tx, const private_key_type& key )
    {  tx.sign( key, db.get_chain_id() );   };
 
-   db.open(td.path(), [this]{return genesis_state;});
+   db.open(td.path(), [this]{return genesis_state;}, "test");
    const balance_object& balance = balance_id_type()(db);
    BOOST_CHECK_EQUAL(balance.balance.amount.value, 1);
    BOOST_CHECK_EQUAL(balance_id_type(1)(db).balance.amount.value, 1);
@@ -1329,6 +1495,79 @@ BOOST_AUTO_TEST_CASE(zero_second_vbo)
          */
       }
    } FC_LOG_AND_RETHROW()
+}
+
+BOOST_AUTO_TEST_CASE( vbo_withdraw_different )
+{
+   try
+   {
+      ACTORS((alice)(izzy));
+      // don't pay witnesses so we have some worker budget to work with
+
+      // transfer(account_id_type(), alice_id, asset(1000));
+
+      asset_id_type stuff_id = create_user_issued_asset( "STUFF", izzy_id(db), 0 ).id;
+      issue_uia( alice_id, asset( 1000, stuff_id ) );
+
+      // deposit STUFF with linear vesting policy
+      vesting_balance_id_type vbid;
+      {
+         linear_vesting_policy_initializer pinit;
+         pinit.begin_timestamp = db.head_block_time();
+         pinit.vesting_cliff_seconds    = 30;
+         pinit.vesting_duration_seconds = 30;
+
+         vesting_balance_create_operation create_op;
+         create_op.creator = alice_id;
+         create_op.owner = alice_id;
+         create_op.amount = asset(100, stuff_id);
+         create_op.policy = pinit;
+
+         signed_transaction create_tx;
+         create_tx.operations.push_back( create_op );
+         set_expiration( db, create_tx );
+         sign(create_tx, alice_private_key);
+
+         processed_transaction ptx = PUSH_TX( db, create_tx );
+         vbid = ptx.operation_results[0].get<object_id_type>();
+      }
+
+      // wait for VB to mature
+      generate_blocks( 30 );
+
+      BOOST_CHECK( vbid(db).get_allowed_withdraw( db.head_block_time() ) == asset(100, stuff_id) );
+
+      // bad withdrawal op (wrong asset)
+      {
+         vesting_balance_withdraw_operation op;
+
+         op.vesting_balance = vbid;
+         op.amount = asset(100);
+         op.owner = alice_id;
+
+         signed_transaction withdraw_tx;
+         withdraw_tx.operations.push_back(op);
+         set_expiration( db, withdraw_tx );
+         sign( withdraw_tx, alice_private_key );
+         GRAPHENE_CHECK_THROW( PUSH_TX( db, withdraw_tx ), fc::exception );
+      }
+
+      // good withdrawal op
+      {
+         vesting_balance_withdraw_operation op;
+
+         op.vesting_balance = vbid;
+         op.amount = asset(100, stuff_id);
+         op.owner = alice_id;
+
+         signed_transaction withdraw_tx;
+         withdraw_tx.operations.push_back(op);
+         set_expiration( db, withdraw_tx );
+         sign( withdraw_tx, alice_private_key );
+         PUSH_TX( db, withdraw_tx );
+      }
+   }
+   FC_LOG_AND_RETHROW()
 }
 
 // TODO:  Write linear VBO tests
